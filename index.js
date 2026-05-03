@@ -5,9 +5,6 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const games = {};
 
-// ================= HELPERS =================
-const sleep = (ms) => new Promise(res => setTimeout(res, ms));
-
 // ================= BOARD =================
 function createBoard(board) {
   const keyboard = [];
@@ -98,11 +95,11 @@ function aiMove(board) {
   return move;
 }
 
-// ================= RESULT TEXT =================
-function getResultText(result) {
-  if (result === '❌') return '🏆 تو بردی!';
-  if (result === '⭕️') return '😈 ربات برد!';
-  if (result === 'draw') return '🤝 مساوی شد!';
+// ================= RESULT =================
+function getResultText(r) {
+  if (r === '❌') return '🏆 تو بردی!';
+  if (r === '⭕️') return '😈 ربات برد!';
+  if (r === 'draw') return '🤝 مساوی!';
   return '';
 }
 
@@ -127,7 +124,7 @@ bot.start((ctx) => {
   };
 
   ctx.reply(
-`🎮 دوز شروع شد
+`🎮 دوز
 
 ❌ تو vs ⭕️ ربات
 
@@ -139,7 +136,7 @@ bot.start((ctx) => {
 // ================= MOVE =================
 bot.action(/move_(\d+)/, async (ctx) => {
   const id = ctx.chat.id;
-  const index = parseInt(ctx.match[1]);
+  const index = +ctx.match[1];
 
   await ctx.answerCbQuery();
 
@@ -147,7 +144,7 @@ bot.action(/move_(\d+)/, async (ctx) => {
   if (!game) return;
 
   if (game.board[index]) {
-    return ctx.answerCbQuery('این خانه پره!');
+    return ctx.answerCbQuery('پر است!');
   }
 
   // 👤 حرکت کاربر
@@ -156,35 +153,22 @@ bot.action(/move_(\d+)/, async (ctx) => {
   let result = checkWin(game.board);
 
   if (result) {
-    await ctx.editMessageText(
+    return ctx.editMessageText(
       getResultText(result),
       endKeyboard(getResultText(result))
     );
-    delete games[id];
-    return;
   }
 
-  // ================= 🤖 THINKING =================
+  // ⚡ بدون پیام اضافی + سریع
   await ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
 
-  const thinkingMsg = await ctx.reply('🤖 دارم فکر می‌کنم...');
-
-  await sleep(900);
-
-  // 🤖 حرکت AI
   const aiIndex = aiMove(game.board);
   game.board[aiIndex] = '⭕️';
-
-  await sleep(400);
-
-  await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id);
 
   result = checkWin(game.board);
 
   await ctx.editMessageText(
-    result
-      ? getResultText(result)
-      : '🤖 فکر کردم... نوبت تو 😎👇',
+    result ? getResultText(result) : 'نوبت تو 👇',
     {
       reply_markup: result
         ? endKeyboard(getResultText(result)).reply_markup
@@ -217,7 +201,7 @@ bot.action('restart', async (ctx) => {
 
 // ================= RUN =================
 bot.launch()
-  .then(() => console.log('🤖 XO Bot Running (Minimax + Thinking)'))
+  .then(() => console.log('🤖 XO Bot Fast Ready'))
   .catch(console.error);
 
 // ================= STOP =================
