@@ -2,13 +2,11 @@ const { Telegraf, Markup } = require('telegraf');
 require('dotenv').config();
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
-
 const games = {};
 
-// ================= BOARD =================
+// ================== BOARD UI ==================
 function boardUI(board) {
   const kb = [];
-
   for (let i = 0; i < 3; i++) {
     kb.push([
       Markup.button.callback(board[i*3] || '⬜️', `m_${i*3}`),
@@ -16,62 +14,51 @@ function boardUI(board) {
       Markup.button.callback(board[i*3+2] || '⬜️', `m_${i*3+2}`)
     ]);
   }
-
   return Markup.inlineKeyboard(kb);
 }
 
-// ================= WIN =================
-function check(b) {
-  const w = [
+// ================== WIN CHECK ==================
+function checkWin(b) {
+  const wins = [
     [0,1,2],[3,4,5],[6,7,8],
     [0,3,6],[1,4,7],[2,5,8],
     [0,4,8],[2,4,6]
   ];
 
-  for (let [a,b2,c] of w) {
+  for (let [a, b2, c] of wins) {
     if (b[a] && b[a] === b[b2] && b[a] === b[c]) return b[a];
   }
 
-  return b.every(x => x) ? 'draw' : null;
+  return b.every(x => x !== null) ? 'draw' : null;
 }
 
-// ================= AI (همان ساده ولی درست) =================
+// ================== AI ==================
 function aiMove(board) {
-  const empty = board.map((v,i)=>v?null:i).filter(v=>v!==null);
-  return empty[Math.floor(Math.random()*empty.length)];
+  const empty = board.map((v, i) => v === null ? i : null).filter(v => v !== null);
+  return empty[Math.floor(Math.random() * empty.length)];
 }
 
-// ================= RENDER =================
+// ================== RENDER ==================
 function render(game, result = null) {
-  const { board, name } = game;
-
   const rows = [];
   for (let i = 0; i < 3; i++) {
-    rows.push(`${board[i*3]||'⬜️'} ${board[i*3+1]||'⬜️'} ${board[i*3+2]||'⬜️'}`);
+    rows.push(`${game.board[i*3]||'⬜️'} ${game.board[i*3+1]||'⬜️'} ${game.board[i*3+2]||'⬜️'}`);
   }
 
-  let status = '';
+  let status = result 
+    ? (result === '❌' ? `🏆 ${game.name} برد!` : result === '⭕️' ? `😈 ربات برد!` : `🤝 مساوی شد!`)
+    : `👤 نوبت ${game.name}`;
 
-  if (!result) {
-    status = `👤 نوبت ${name}`;
-  } else if (result === '❌') {
-    status = `🏆 ${name} برد!`;
-  } else if (result === '⭕️') {
-    status = `😈 ربات برد!`;
-  } else {
-    status = `🤝 مساوی شد!`;
-  }
+  return `🎮 بازی دوز
 
-  return `🎮 دوز
-
-👤 ${name} vs 🤖 ربات
+👤 ${game.name}: ❌    🤖 ربات: ⭕️
 
 ${rows.join('\n')}
 
 ${status}`;
 }
 
-// ================= START =================
+// ================== START ==================
 bot.start(async (ctx) => {
   const id = ctx.chat.id;
   const name = ctx.from.first_name || "بازیکن";
@@ -85,100 +72,104 @@ bot.start(async (ctx) => {
     finished: false
   };
 
-  await ctx.reply(
-    render(games[id]),
-    boardUI(games[id].board)
-  );
+  const game = games[id];
 
-  // اگر ربات شروع کند → فقط edit همان پیام
+  await ctx.reply(render(game), boardUI(game.board));
+
+  // اگر ربات اول شروع کند
   if (!userStarts) {
-    const g = games[id];
-    const move = aiMove(g.board);
-    g.board[move] = '⭕️';
-    g.userTurn = true;
+    setTimeout(async () => {
+      const move = aiMove(game.board);
+      game.board[move] = '⭕️';
+      game.userTurn = true;
 
-    await ctx.reply(
-      render(g),
-      boardUI(g.board)
-    );
+      await ctx.editMessageText(render(game), boardUI(game.board));
+    }, 900);
   }
 });
 
-// ================= MOVE =================
+// ================== MOVE ==================
 bot.action(/m_(\d+)/, async (ctx) => {
   const id = ctx.chat.id;
-  const i = +ctx.match[1];
+  const index = +ctx.match[1];
+  const game = games[id];
+
+  if (!game || game.finished || !game.userTurn) {
+    return ctx.answerCbQuery('نوبت رباته!');
+  }
+  if (game.board[index] !== null) {
+    return ctx.answerCbQuery('این خانه پر است!');
+  }
 
   await ctx.answerCbQuery();
 
-  const g = games[id];
-  if (!g || g.finished) return;
+  // حرکت کاربر
+  game.board[index] = '❌';
+  let result = checkWin(game.board);
 
-  if (!g.userTurn) return ctx.answerCbQuery('نوبت رباته 🤖');
-  if (g.board[i]) return ctx.answerCbQuery('پر است!');
-
-  // 👤 move user
-  g.board[i] = '❌';
-
-  let res = check(g.board);
-
-  if (res) {
-    g.finished = true;
-    return ctx.editMessageText(render(g, res), {
-      reply_markup: Markup.inlineKeyboard([
-        [{ text: '🔁 بازی مجدد', callback_data: 'restart' }]
-      ])
+  if (result) {
+    game.finished = true;
+    return ctx.editMessageText(render(game, result), {
+      reply_markup: Markup.inlineKeyboard([[ 
+        { text: '🔁 بازی مجدد', callback_data: 'restart' } 
+      ]])
     });
   }
 
-  g.userTurn = false;
+  game.userTurn = false;
 
-  // 🤖 move AI
-  const ai = aiMove(g.board);
-  g.board[ai] = '⭕️';
+  // حرکت ربات
+  const aiIndex = aiMove(game.board);
+  game.board[aiIndex] = '⭕️';
+  result = checkWin(game.board);
 
-  res = check(g.board);
+  game.userTurn = true;
 
-  g.userTurn = true;
-
-  if (res) {
-    g.finished = true;
-    return ctx.editMessageText(render(g, res), {
-      reply_markup: Markup.inlineKeyboard([
-        [{ text: '🔁 بازی مجدد', callback_data: 'restart' }]
-      ])
+  if (result) {
+    game.finished = true;
+    return ctx.editMessageText(render(game, result), {
+      reply_markup: Markup.inlineKeyboard([[ 
+        { text: '🔁 بازی مجدد', callback_data: 'restart' } 
+      ]])
     });
   }
 
-  return ctx.editMessageText(render(g), boardUI(g.board));
+  // ادامه بازی
+  await ctx.editMessageText(render(game), boardUI(game.board));
 });
 
-// ================= RESTART =================
+// ================== RESTART ==================
 bot.action('restart', async (ctx) => {
   const id = ctx.chat.id;
   const name = ctx.from.first_name || "بازیکن";
 
+  const userStarts = Math.random() < 0.5;
+
   games[id] = {
     board: Array(9).fill(null),
     name,
-    userTurn: Math.random() < 0.5,
+    userTurn: userStarts,
     finished: false
   };
 
-  await ctx.answerCbQuery();
+  const game = games[id];
 
-  const g = games[id];
+  await ctx.answerCbQuery('بازی جدید شروع شد ✅');
+  await ctx.editMessageText(render(game), boardUI(game.board));
 
-  // اگر ربات شروع کند
-  if (!g.userTurn) {
-    const move = aiMove(g.board);
-    g.board[move] = '⭕️';
-    g.userTurn = true;
+  if (!userStarts) {
+    setTimeout(async () => {
+      const move = aiMove(game.board);
+      game.board[move] = '⭕️';
+      game.userTurn = true;
+      await ctx.editMessageText(render(game), boardUI(game.board));
+    }, 800);
   }
-
-  return ctx.editMessageText(render(g), boardUI(g.board));
 });
 
 bot.launch()
-  .then(() => console.log('🤖 XO FIXED running'))
-  .catch(console.error);
+  .then(() => console.log('✅ ربات دوز آماده است'))
+  .catch(err => console.error('❌ خطا:', err));
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
