@@ -2,210 +2,208 @@ const { Telegraf, Markup } = require('telegraf');
 require('dotenv').config();
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
-
 const games = {};
 
-// ================= BOARD =================
+// ================== UI ==================
 function boardUI(board) {
   return Markup.inlineKeyboard(
-    [0,1,2].map(r =>
-      [
-        Markup.button.callback(board[r*3] || '⬜️', `m_${r*3}`),
-        Markup.button.callback(board[r*3+1] || '⬜️', `m_${r*3+1}`),
-        Markup.button.callback(board[r*3+2] || '⬜️', `m_${r*3+2}`)
-      ]
-    )
+    [0,1,2].map(r => [
+      Markup.button.callback(board[r*3]   || '⬜️', `m_${r*3}`),
+      Markup.button.callback(board[r*3+1] || '⬜️', `m_${r*3+1}`),
+      Markup.button.callback(board[r*3+2] || '⬜️', `m_${r*3+2}`)
+    ])
   );
 }
 
-// ================= WIN =================
-function checkWin(b) {
-  const wins = [
-    [0,1,2],[3,4,5],[6,7,8],
-    [0,3,6],[1,4,7],[2,5,8],
-    [0,4,8],[2,4,6]
-  ];
+function endKeyboard() {
+  return Markup.inlineKeyboard([[{ text: '🔁 بازی مجدد', callback_data: 'restart' }]]);
+}
 
+// ================== LOGIC ==================
+function checkWin(b) {
+  const wins = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
   for (let [a,b2,c] of wins) {
     if (b[a] && b[a] === b[b2] && b[a] === b[c]) return b[a];
   }
-
-  return b.every(x => x) ? 'draw' : null;
+  return b.every(x => x !== null) ? 'draw' : null;
 }
 
-// ================= AI =================
-function aiMove(board) {
-  const empty = board
-    .map((v,i)=>v===null?i:null)
-    .filter(v=>v!==null);
+// ================== MINIMAX (با Depth) ==================
+function minimax(board, isMaximizing, depth = 0) {
+  const result = checkWin(board);
 
-  return empty[Math.floor(Math.random()*empty.length)];
+  if (result === '⭕️') return 10 - depth;   // ترجیح برد سریع
+  if (result === '❌') return -10 + depth;  // ترجیح باخت دیرتر
+  if (result === 'draw') return 0;
+
+  if (isMaximizing) {
+    let best = -Infinity;
+    for (let i = 0; i < 9; i++) {
+      if (board[i] === null) {
+        board[i] = '⭕️';
+        best = Math.max(best, minimax(board, false, depth + 1));
+        board[i] = null;
+      }
+    }
+    return best;
+  } else {
+    let best = Infinity;
+    for (let i = 0; i < 9; i++) {
+      if (board[i] === null) {
+        board[i] = '❌';
+        best = Math.min(best, minimax(board, true, depth + 1));
+        board[i] = null;
+      }
+    }
+    return best;
+  }
 }
 
-// ================= RENDER =================
+function aiBestMove(board) {
+  let bestScore = -Infinity;
+  let bestMove = -1;
+
+  for (let i = 0; i < 9; i++) {
+    if (board[i] === null) {
+      board[i] = '⭕️';
+      const score = minimax(board, false);
+      board[i] = null;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = i;
+      }
+    }
+  }
+  return bestMove;
+}
+
+// ================== RENDER ==================
 function render(game, result = null) {
   const b = game.board;
+  const grid = [0,1,2].map(i => 
+    `${b[i*3]||'⬜️'} ${b[i*3+1]||'⬜️'} ${b[i*3+2]||'⬜️'}`
+  ).join('\n');
 
-  const grid = [
-    `${b[0]||'⬜️'} ${b[1]||'⬜️'} ${b[2]||'⬜️'}`,
-    `${b[3]||'⬜️'} ${b[4]||'⬜️'} ${b[5]||'⬜️'}`,
-    `${b[6]||'⬜️'} ${b[7]||'⬜️'} ${b[8]||'⬜️'}`
-  ].join('\n');
+  let status = result 
+    ? (result === '❌' ? `🏆 ${game.name} برد!` 
+       : result === '⭕️' ? `🤖 ربات برد!` 
+       : `🤝 مساوی!`)
+    : `👤 نوبت ${game.name}`;
 
-  let status =
-    result === '❌' ? `🏆 ${game.name} برد!` :
-    result === '⭕️' ? `🤖 ربات برد!` :
-    result === 'draw' ? `🤝 مساوی!` :
-    `👤 نوبت ${game.name}`;
+  return `🎮 بازی دوز
 
-  return `🎮 دوز
-
-👤 ${game.name} vs 🤖 ربات
+👤 ${game.name}: ❌    🤖 ربات: ⭕️
 
 ${grid}
 
 ${status}`;
 }
 
-// ================= SAFE EDIT (FIXED) =================
-async function safeEdit(ctx, game, result = null, keyboard = null) {
+// ================== SAFE EDIT (بدون fallback پیام جدید) ==================
+async function safeEdit(chatId, game, result = null, isFinished = false) {
+  const keyboard = isFinished ? endKeyboard() : boardUI(game.board);
+
   try {
-    await ctx.editMessageText(
+    await bot.telegram.editMessageText(
+      chatId,
+      undefined,
+      undefined,
       render(game, result),
-      {
-        reply_markup: keyboard ? keyboard.reply_markup : boardUI(game.board).reply_markup
-      }
+      { reply_markup: keyboard.reply_markup }
     );
   } catch (e) {
-    console.log('edit ignored');
+    console.log(`[SafeEdit] Failed for chat ${chatId}`);
+    // عمداً fallback پیام جدید نداریم تا چت شلوغ نشود
   }
 }
 
-// ================= START =================
-bot.start(async (ctx) => {
-  const id = ctx.chat.id;
+// ================== BOT MOVE ==================
+async function makeBotMove(chatId) {
+  const game = games[chatId];
+  if (!game || game.finished) return;
+
+  const currentVersion = game.version;
+  const bestMove = aiBestMove(game.board);
+
+  if (bestMove < 0) return; // هیچ حرکت معتبری نبود
+
+  game.board[bestMove] = '⭕️';
+  game.userTurn = true;
+
+  await safeEdit(chatId, game);
+
+  if (games[chatId]?.version !== currentVersion) return;
+}
+
+// ================== END GAME ==================
+async function endGame(chatId, game, result) {
+  game.finished = true;
+  await safeEdit(chatId, game, result, true);
+}
+
+// ================== START NEW GAME ==================
+async function startNewGame(ctx, isRestart = false) {
+  const chatId = ctx.chat.id;
   const name = ctx.from.first_name || "بازیکن";
+  const version = Date.now();
 
-  const userStarts = Math.random() < 0.5;
-
-  const game = {
+  games[chatId] = {
     board: Array(9).fill(null),
     name,
-    userTurn: userStarts,
+    userTurn: Math.random() < 0.5,
     finished: false,
-    chatId: id
+    version
   };
 
-  games[id] = game;
+  const game = games[chatId];
 
-  await ctx.reply(render(game), boardUI(game.board));
+  if (isRestart) await ctx.answerCbQuery('🔄 بازی جدید');
 
-  // ✅ FIX: no ctx inside timeout logic
-  if (!userStarts) {
-    setTimeout(async () => {
-      if (!games[id]) return;
+  const sendMethod = isRestart ? safeEdit : ctx.reply.bind(ctx);
+  await sendMethod(chatId, game);
 
-      const move = aiMove(game.board);
-      game.board[move] = '⭕️';
-      game.userTurn = true;
-
-      await safeEdit(ctx, game);
-    }, 400);
+  if (!game.userTurn) {
+    setTimeout(() => {
+      const current = games[chatId];
+      if (current && current.version === version) makeBotMove(chatId);
+    }, 650);
   }
-});
+}
 
-// ================= MOVE =================
+bot.start((ctx) => startNewGame(ctx));
+bot.action('restart', (ctx) => startNewGame(ctx, true));
+
+// ================== MOVE ==================
 bot.action(/m_(\d+)/, async (ctx) => {
-  const id = ctx.chat.id;
-  const i = +ctx.match[1];
-  const game = games[id];
+  const chatId = ctx.chat.id;
+  const index = +ctx.match[1];
+  const game = games[chatId];
 
-  if (!game || game.finished) return ctx.answerCbQuery();
-  if (!game.userTurn) return ctx.answerCbQuery('نوبت رباته 🤖');
-  if (game.board[i]) return ctx.answerCbQuery('پر است!');
+  if (!game || game.finished || !game.userTurn || game.board[index] !== null) {
+    return ctx.answerCbQuery('⚠️ حرکت نامعتبر!');
+  }
 
   await ctx.answerCbQuery();
 
-  // user move
-  game.board[i] = '❌';
+  game.board[index] = '❌';
+  let result = checkWin(game.board);
 
-  let res = checkWin(game.board);
-
-  if (res) {
-    game.finished = true;
-
-    return safeEdit(
-      ctx,
-      game,
-      res,
-      Markup.inlineKeyboard([
-        [{ text: '🔁 بازی مجدد', callback_data: 'restart' }]
-      ])
-    );
-  }
+  if (result) return endGame(chatId, game, result);
 
   game.userTurn = false;
+  await makeBotMove(chatId);
 
-  // AI move
-  const ai = aiMove(game.board);
-  game.board[ai] = '⭕️';
-
-  res = checkWin(game.board);
-
-  game.userTurn = true;
-
-  if (res) {
-    game.finished = true;
-
-    return safeEdit(
-      ctx,
-      game,
-      res,
-      Markup.inlineKeyboard([
-        [{ text: '🔁 بازی مجدد', callback_data: 'restart' }]
-      ])
-    );
-  }
-
-  return safeEdit(ctx, game);
-});
-
-// ================= RESTART =================
-bot.action('restart', async (ctx) => {
-  const id = ctx.chat.id;
-  const name = ctx.from.first_name || "بازیکن";
-
-  const userStarts = Math.random() < 0.5;
-
-  const game = {
-    board: Array(9).fill(null),
-    name,
-    userTurn: userStarts,
-    finished: false,
-    chatId: id
-  };
-
-  games[id] = game;
-
-  await ctx.answerCbQuery('شروع شد');
-
-  await safeEdit(ctx, game);
-
-  if (!userStarts) {
-    setTimeout(async () => {
-      if (!games[id]) return;
-
-      const move = aiMove(game.board);
-      game.board[move] = '⭕️';
-      game.userTurn = true;
-
-      await safeEdit(ctx, game);
-    }, 350);
+  const updated = games[chatId];
+  if (updated && !updated.finished) {
+    result = checkWin(updated.board);
+    if (result) await endGame(chatId, updated, result);
+    else updated.userTurn = true;
   }
 });
 
 bot.launch()
-  .then(() => console.log('🤖 XO PRO CLEAN running'))
+  .then(() => console.log('🚀 ربات دوز نهایی با Minimax هوشمند اجرا شد'))
   .catch(console.error);
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
