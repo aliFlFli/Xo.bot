@@ -2,21 +2,20 @@ const { Telegraf, Markup } = require('telegraf');
 require('dotenv').config();
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
+
 const games = {};
 
 // ================= BOARD =================
 function boardUI(board) {
-  const kb = [];
-
-  for (let i = 0; i < 3; i++) {
-    kb.push([
-      Markup.button.callback(board[i*3] || '⬜️', `m_${i*3}`),
-      Markup.button.callback(board[i*3+1] || '⬜️', `m_${i*3+1}`),
-      Markup.button.callback(board[i*3+2] || '⬜️', `m_${i*3+2}`)
-    ]);
-  }
-
-  return Markup.inlineKeyboard(kb);
+  return Markup.inlineKeyboard(
+    [0,1,2].map(r =>
+      [
+        Markup.button.callback(board[r*3] || '⬜️', `m_${r*3}`),
+        Markup.button.callback(board[r*3+1] || '⬜️', `m_${r*3+1}`),
+        Markup.button.callback(board[r*3+2] || '⬜️', `m_${r*3+2}`)
+      ]
+    )
+  );
 }
 
 // ================= WIN =================
@@ -31,49 +30,54 @@ function checkWin(b) {
     if (b[a] && b[a] === b[b2] && b[a] === b[c]) return b[a];
   }
 
-  return b.every(x => x !== null) ? 'draw' : null;
+  return b.every(x => x) ? 'draw' : null;
 }
 
 // ================= AI =================
 function aiMove(board) {
-  const empty = board.map((v,i)=>v===null?i:null).filter(v=>v!==null);
+  const empty = board
+    .map((v,i)=>v===null?i:null)
+    .filter(v=>v!==null);
+
   return empty[Math.floor(Math.random()*empty.length)];
 }
 
 // ================= RENDER =================
-function render(game, result=null) {
-  const rows = [];
+function render(game, result = null) {
+  const b = game.board;
 
-  for (let i=0;i<3;i++) {
-    rows.push(`${game.board[i*3]||'⬜️'} ${game.board[i*3+1]||'⬜️'} ${game.board[i*3+2]||'⬜️'}`);
-  }
+  const grid = [
+    `${b[0]||'⬜️'} ${b[1]||'⬜️'} ${b[2]||'⬜️'}`,
+    `${b[3]||'⬜️'} ${b[4]||'⬜️'} ${b[5]||'⬜️'}`,
+    `${b[6]||'⬜️'} ${b[7]||'⬜️'} ${b[8]||'⬜️'}`
+  ].join('\n');
 
-  let status = '';
-
-  if (!result) status = `👤 نوبت ${game.name}`;
-  else if (result === '❌') status = `🏆 ${game.name} برد!`;
-  else if (result === '⭕️') status = `😈 ربات برد!`;
-  else status = `🤝 مساوی شد!`;
+  let status =
+    result === '❌' ? `🏆 ${game.name} برد!` :
+    result === '⭕️' ? `🤖 ربات برد!` :
+    result === 'draw' ? `🤝 مساوی!` :
+    `👤 نوبت ${game.name}`;
 
   return `🎮 دوز
 
 👤 ${game.name} vs 🤖 ربات
 
-${rows.join('\n')}
+${grid}
 
 ${status}`;
 }
 
-// ================= SAFE EDIT =================
-async function safeEdit(ctx, game, result=null, keyboard=null) {
+// ================= SAFE EDIT (FIXED) =================
+async function safeEdit(ctx, game, result = null, keyboard = null) {
   try {
-    return await ctx.editMessageText(
+    await ctx.editMessageText(
       render(game, result),
-      keyboard ? keyboard : boardUI(game.board)
+      {
+        reply_markup: keyboard ? keyboard.reply_markup : boardUI(game.board).reply_markup
+      }
     );
   } catch (e) {
-    // اگر پیام قابل edit نبود → ignore
-    console.log('edit skipped');
+    console.log('edit ignored');
   }
 }
 
@@ -88,26 +92,25 @@ bot.start(async (ctx) => {
     board: Array(9).fill(null),
     name,
     userTurn: userStarts,
-    finished: false
+    finished: false,
+    chatId: id
   };
 
   games[id] = game;
 
-  const msg = await ctx.reply(render(game), boardUI(game.board));
+  await ctx.reply(render(game), boardUI(game.board));
 
-  game.messageId = msg.message_id;
-
-  // اگر ربات شروع کند (بدون timeout خراب‌کننده)
+  // ✅ FIX: no ctx inside timeout logic
   if (!userStarts) {
-    setTimeout(() => {
+    setTimeout(async () => {
       if (!games[id]) return;
 
       const move = aiMove(game.board);
       game.board[move] = '⭕️';
       game.userTurn = true;
 
-      safeEdit(ctx, game);
-    }, 600);
+      await safeEdit(ctx, game);
+    }, 400);
   }
 });
 
@@ -118,7 +121,6 @@ bot.action(/m_(\d+)/, async (ctx) => {
   const game = games[id];
 
   if (!game || game.finished) return ctx.answerCbQuery();
-
   if (!game.userTurn) return ctx.answerCbQuery('نوبت رباته 🤖');
   if (game.board[i]) return ctx.answerCbQuery('پر است!');
 
@@ -131,14 +133,20 @@ bot.action(/m_(\d+)/, async (ctx) => {
 
   if (res) {
     game.finished = true;
-    return safeEdit(ctx, game, res, Markup.inlineKeyboard([
-      [{ text:'🔁 بازی مجدد', callback_data:'restart' }]
-    ]));
+
+    return safeEdit(
+      ctx,
+      game,
+      res,
+      Markup.inlineKeyboard([
+        [{ text: '🔁 بازی مجدد', callback_data: 'restart' }]
+      ])
+    );
   }
 
   game.userTurn = false;
 
-  // ai move
+  // AI move
   const ai = aiMove(game.board);
   game.board[ai] = '⭕️';
 
@@ -148,9 +156,15 @@ bot.action(/m_(\d+)/, async (ctx) => {
 
   if (res) {
     game.finished = true;
-    return safeEdit(ctx, game, res, Markup.inlineKeyboard([
-      [{ text:'🔁 بازی مجدد', callback_data:'restart' }]
-    ]));
+
+    return safeEdit(
+      ctx,
+      game,
+      res,
+      Markup.inlineKeyboard([
+        [{ text: '🔁 بازی مجدد', callback_data: 'restart' }]
+      ])
+    );
   }
 
   return safeEdit(ctx, game);
@@ -163,32 +177,36 @@ bot.action('restart', async (ctx) => {
 
   const userStarts = Math.random() < 0.5;
 
-  games[id] = {
+  const game = {
     board: Array(9).fill(null),
     name,
     userTurn: userStarts,
-    finished: false
+    finished: false,
+    chatId: id
   };
 
-  const game = games[id];
+  games[id] = game;
 
   await ctx.answerCbQuery('شروع شد');
 
   await safeEdit(ctx, game);
 
   if (!userStarts) {
-    setTimeout(() => {
+    setTimeout(async () => {
       if (!games[id]) return;
 
       const move = aiMove(game.board);
       game.board[move] = '⭕️';
       game.userTurn = true;
 
-      safeEdit(ctx, game);
-    }, 500);
+      await safeEdit(ctx, game);
+    }, 350);
   }
 });
 
 bot.launch()
-  .then(() => console.log('🤖 XO stable version running'))
+  .then(() => console.log('🤖 XO PRO CLEAN running'))
   .catch(console.error);
+
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
