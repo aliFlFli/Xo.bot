@@ -7,47 +7,43 @@ const games = {};
 
 // ================= BOARD =================
 function createBoard(board) {
-  const keyboard = [];
+  const kb = [];
 
   for (let i = 0; i < 3; i++) {
-    keyboard.push([
+    kb.push([
       Markup.button.callback(board[i*3]     || '⬜️', `move_${i*3}`),
       Markup.button.callback(board[i*3 + 1] || '⬜️', `move_${i*3 + 1}`),
       Markup.button.callback(board[i*3 + 2] || '⬜️', `move_${i*3 + 2}`)
     ]);
   }
 
-  return Markup.inlineKeyboard(keyboard);
+  return Markup.inlineKeyboard(kb);
 }
 
-// ================= WIN CHECK =================
-function checkWin(board) {
-  const wins = [
+// ================= WIN =================
+function checkWin(b) {
+  const w = [
     [0,1,2],[3,4,5],[6,7,8],
     [0,3,6],[1,4,7],[2,5,8],
     [0,4,8],[2,4,6]
   ];
 
-  for (let [a,b,c] of wins) {
-    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
-      return board[a];
-    }
+  for (let [a,b2,c] of w) {
+    if (b[a] && b[a] === b[b2] && b[a] === b[c]) return b[a];
   }
 
-  return board.every(v => v !== null) ? 'draw' : null;
+  return b.every(x => x !== null) ? 'draw' : null;
 }
 
 // ================= MINIMAX =================
 function minimax(board, isMax) {
-  const result = checkWin(board);
+  const res = checkWin(board);
 
-  if (result === '⭕️') return 1;
-  if (result === '❌') return -1;
-  if (result === 'draw') return 0;
+  if (res === '⭕️') return 1;
+  if (res === '❌') return -1;
+  if (res === 'draw') return 0;
 
-  const empty = board
-    .map((v,i)=>v===null?i:null)
-    .filter(v=>v!==null);
+  const empty = board.map((v,i)=>v===null?i:null).filter(v=>v!==null);
 
   if (isMax) {
     let best = -Infinity;
@@ -72,21 +68,19 @@ function minimax(board, isMax) {
   }
 }
 
-// ================= AI MOVE =================
+// ================= AI =================
 function aiMove(board) {
-  let bestScore = -Infinity;
+  let best = -Infinity;
   let move = null;
 
   for (let i = 0; i < board.length; i++) {
-    if (board[i] === null) {
+    if (!board[i]) {
       board[i] = '⭕️';
-
-      const score = minimax(board, false);
-
+      let score = minimax(board, false);
       board[i] = null;
 
-      if (score > bestScore) {
-        bestScore = score;
+      if (score > best) {
+        best = score;
         move = i;
       }
     }
@@ -95,15 +89,15 @@ function aiMove(board) {
   return move;
 }
 
-// ================= RESULT =================
-function getResultText(r) {
+// ================= RESULT TEXT =================
+function resultText(r) {
   if (r === '❌') return '🏆 تو بردی!';
   if (r === '⭕️') return '😈 ربات برد!';
-  if (r === 'draw') return '🤝 مساوی!';
+  if (r === 'draw') return '🤝 مساوی شد!';
   return '';
 }
 
-// ================= END KEYBOARD =================
+// ================= END UI =================
 function endKeyboard(text) {
   return {
     reply_markup: {
@@ -136,47 +130,41 @@ bot.start((ctx) => {
 // ================= MOVE =================
 bot.action(/move_(\d+)/, async (ctx) => {
   const id = ctx.chat.id;
-  const index = +ctx.match[1];
+  const i = +ctx.match[1];
 
   await ctx.answerCbQuery();
 
   const game = games[id];
   if (!game) return;
 
-  if (game.board[index]) {
-    return ctx.answerCbQuery('پر است!');
-  }
+  if (game.board[i]) return ctx.answerCbQuery('پر است!');
 
   // 👤 حرکت کاربر
-  game.board[index] = '❌';
+  game.board[i] = '❌';
 
-  let result = checkWin(game.board);
+  let res = checkWin(game.board);
 
-  if (result) {
+  if (res) {
     return ctx.editMessageText(
-      getResultText(result),
-      endKeyboard(getResultText(result))
+      renderBoard(game.board, resultText(res)),
+      endKeyboard(resultText(res))
     );
   }
 
-  // ⚡ بدون پیام اضافی + سریع
-  await ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
+  // 🤖 حرکت AI (بدون typing، بدون پیام اضافی)
+  const ai = aiMove(game.board);
+  game.board[ai] = '⭕️';
 
-  const aiIndex = aiMove(game.board);
-  game.board[aiIndex] = '⭕️';
-
-  result = checkWin(game.board);
+  res = checkWin(game.board);
 
   await ctx.editMessageText(
-    result ? getResultText(result) : 'نوبت تو 👇',
-    {
-      reply_markup: result
-        ? endKeyboard(getResultText(result)).reply_markup
-        : createBoard(game.board).reply_markup
-    }
+    renderBoard(game.board, res ? resultText(res) : 'نوبت تو 👇'),
+    res
+      ? endKeyboard(resultText(res))
+      : createBoard(game.board)
   );
 
-  if (result) delete games[id];
+  if (res) delete games[id];
 });
 
 // ================= RESTART =================
@@ -190,7 +178,7 @@ bot.action('restart', async (ctx) => {
   };
 
   await ctx.editMessageText(
-`🎮 بازی جدید شروع شد
+`🎮 بازی جدید
 
 ❌ تو vs ⭕️ ربات
 
@@ -199,11 +187,25 @@ bot.action('restart', async (ctx) => {
   );
 });
 
+// ================= BOARD RENDER =================
+function renderBoard(board, status) {
+  const rows = [];
+
+  for (let i = 0; i < 3; i++) {
+    rows.push(`${board[i*3] || '⬜️'} ${board[i*3+1] || '⬜️'} ${board[i*3+2] || '⬜️'}`);
+  }
+
+  return `🎮 دوز
+
+${rows.join('\n')}
+
+${status}`;
+}
+
 // ================= RUN =================
 bot.launch()
-  .then(() => console.log('🤖 XO Bot Fast Ready'))
+  .then(() => console.log('🤖 XO Fixed UI Bot Running'))
   .catch(console.error);
 
-// ================= STOP =================
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
