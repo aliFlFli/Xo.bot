@@ -5,6 +5,9 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 const games = {};
 
+// ================= HELPERS =================
+const sleep = (ms) => new Promise(res => setTimeout(res, ms));
+
 // ================= BOARD =================
 function createBoard(board) {
   const keyboard = [];
@@ -20,7 +23,7 @@ function createBoard(board) {
   return Markup.inlineKeyboard(keyboard);
 }
 
-// ================= CHECK WIN =================
+// ================= WIN CHECK =================
 function checkWin(board) {
   const wins = [
     [0,1,2],[3,4,5],[6,7,8],
@@ -38,7 +41,7 @@ function checkWin(board) {
 }
 
 // ================= MINIMAX =================
-function minimax(board, isMaximizing) {
+function minimax(board, isMax) {
   const result = checkWin(board);
 
   if (result === '⭕️') return 1;
@@ -49,15 +52,13 @@ function minimax(board, isMaximizing) {
     .map((v,i)=>v===null?i:null)
     .filter(v=>v!==null);
 
-  if (isMaximizing) {
+  if (isMax) {
     let best = -Infinity;
 
     for (let i of empty) {
       board[i] = '⭕️';
-      let score = minimax(board, false);
+      best = Math.max(best, minimax(board, false));
       board[i] = null;
-
-      best = Math.max(best, score);
     }
 
     return best;
@@ -66,10 +67,8 @@ function minimax(board, isMaximizing) {
 
     for (let i of empty) {
       board[i] = '❌';
-      let score = minimax(board, true);
+      best = Math.min(best, minimax(board, true));
       board[i] = null;
-
-      best = Math.min(best, score);
     }
 
     return best;
@@ -85,7 +84,7 @@ function aiMove(board) {
     if (board[i] === null) {
       board[i] = '⭕️';
 
-      let score = minimax(board, false);
+      const score = minimax(board, false);
 
       board[i] = null;
 
@@ -99,6 +98,26 @@ function aiMove(board) {
   return move;
 }
 
+// ================= RESULT TEXT =================
+function getResultText(result) {
+  if (result === '❌') return '🏆 تو بردی!';
+  if (result === '⭕️') return '😈 ربات برد!';
+  if (result === 'draw') return '🤝 مساوی شد!';
+  return '';
+}
+
+// ================= END KEYBOARD =================
+function endKeyboard(text) {
+  return {
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: `🏁 ${text}`, callback_data: 'info' }],
+        [{ text: '🔁 بازی مجدد', callback_data: 'restart' }]
+      ]
+    }
+  };
+}
+
 // ================= START =================
 bot.start((ctx) => {
   const id = ctx.chat.id;
@@ -108,7 +127,7 @@ bot.start((ctx) => {
   };
 
   ctx.reply(
-`🎮 دوز شروع شد!
+`🎮 دوز شروع شد
 
 ❌ تو vs ⭕️ ربات
 
@@ -125,28 +144,40 @@ bot.action(/move_(\d+)/, async (ctx) => {
   await ctx.answerCbQuery();
 
   const game = games[id];
-  if (!game) return ctx.answerCbQuery('اول /start بزن');
+  if (!game) return;
 
   if (game.board[index]) {
-    return ctx.answerCbQuery('این خانه پر است!');
+    return ctx.answerCbQuery('این خانه پره!');
   }
 
-  // حرکت کاربر
+  // 👤 حرکت کاربر
   game.board[index] = '❌';
 
   let result = checkWin(game.board);
 
   if (result) {
-    await ctx.editMessageText(getResultText(result), {
-      reply_markup: restartKeyboard().reply_markup
-    });
+    await ctx.editMessageText(
+      getResultText(result),
+      endKeyboard(getResultText(result))
+    );
     delete games[id];
     return;
   }
 
-  // حرکت ربات (Minimax AI)
+  // ================= 🤖 THINKING =================
+  await ctx.telegram.sendChatAction(ctx.chat.id, 'typing');
+
+  const thinkingMsg = await ctx.reply('🤖 دارم فکر می‌کنم...');
+
+  await sleep(900);
+
+  // 🤖 حرکت AI
   const aiIndex = aiMove(game.board);
   game.board[aiIndex] = '⭕️';
+
+  await sleep(400);
+
+  await ctx.telegram.deleteMessage(ctx.chat.id, thinkingMsg.message_id);
 
   result = checkWin(game.board);
 
@@ -156,7 +187,7 @@ bot.action(/move_(\d+)/, async (ctx) => {
       : '🤖 فکر کردم... نوبت تو 😎👇',
     {
       reply_markup: result
-        ? restartKeyboard().reply_markup
+        ? endKeyboard(getResultText(result)).reply_markup
         : createBoard(game.board).reply_markup
     }
   );
@@ -165,16 +196,6 @@ bot.action(/move_(\d+)/, async (ctx) => {
 });
 
 // ================= RESTART =================
-function restartKeyboard() {
-  return {
-    reply_markup: {
-      inline_keyboard: [
-        [{ text: '🔁 بازی مجدد', callback_data: 'restart' }]
-      ]
-    }
-  };
-}
-
 bot.action('restart', async (ctx) => {
   const id = ctx.chat.id;
 
@@ -185,7 +206,7 @@ bot.action('restart', async (ctx) => {
   };
 
   await ctx.editMessageText(
-`🎮 بازی جدید شروع شد!
+`🎮 بازی جدید شروع شد
 
 ❌ تو vs ⭕️ ربات
 
@@ -194,18 +215,10 @@ bot.action('restart', async (ctx) => {
   );
 });
 
-// ================= RESULT =================
-function getResultText(result) {
-  if (result === '❌') return '🏆 تو بردی (خیلی کم پیش میاد 😄)';
-  if (result === '⭕️') return '😈 من بردم!';
-  if (result === 'draw') return '🤝 مساوی شد!';
-  return '';
-}
-
 // ================= RUN =================
 bot.launch()
-  .then(() => console.log('🤖 XO Minimax Bot Running'))
-  .catch(err => console.error('❌ Error:', err));
+  .then(() => console.log('🤖 XO Bot Running (Minimax + Thinking)'))
+  .catch(console.error);
 
 // ================= STOP =================
 process.once('SIGINT', () => bot.stop('SIGINT'));
