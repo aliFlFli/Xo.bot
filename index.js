@@ -20,7 +20,7 @@ function createBoard(board) {
   return Markup.inlineKeyboard(keyboard);
 }
 
-// ================= WIN CHECK =================
+// ================= CHECK WIN =================
 function checkWin(board) {
   const wins = [
     [0,1,2],[3,4,5],[6,7,8],
@@ -37,37 +37,66 @@ function checkWin(board) {
   return board.every(v => v !== null) ? 'draw' : null;
 }
 
-// ================= AI =================
-function aiMove(board) {
+// ================= MINIMAX =================
+function minimax(board, isMaximizing) {
+  const result = checkWin(board);
+
+  if (result === '⭕️') return 1;
+  if (result === '❌') return -1;
+  if (result === 'draw') return 0;
+
   const empty = board
     .map((v,i)=>v===null?i:null)
     .filter(v=>v!==null);
 
-  // 1. برد
-  for (let i of empty) {
-    const test = [...board];
-    test[i] = '⭕️';
-    if (checkWin(test) === '⭕️') return i;
+  if (isMaximizing) {
+    let best = -Infinity;
+
+    for (let i of empty) {
+      board[i] = '⭕️';
+      let score = minimax(board, false);
+      board[i] = null;
+
+      best = Math.max(best, score);
+    }
+
+    return best;
+  } else {
+    let best = Infinity;
+
+    for (let i of empty) {
+      board[i] = '❌';
+      let score = minimax(board, true);
+      board[i] = null;
+
+      best = Math.min(best, score);
+    }
+
+    return best;
+  }
+}
+
+// ================= AI MOVE =================
+function aiMove(board) {
+  let bestScore = -Infinity;
+  let move = null;
+
+  for (let i = 0; i < board.length; i++) {
+    if (board[i] === null) {
+      board[i] = '⭕️';
+
+      let score = minimax(board, false);
+
+      board[i] = null;
+
+      if (score > bestScore) {
+        bestScore = score;
+        move = i;
+      }
+    }
   }
 
-  // 2. بلاک
-  for (let i of empty) {
-    const test = [...board];
-    test[i] = '❌';
-    if (checkWin(test) === '❌') return i;
-  }
-
-  // 3. مرکز
-  if (board[4] === null) return 4;
-
-  // 4. گوشه‌ها
-  const corners = [0,2,6,8].filter(i => board[i] === null);
-  if (corners.length) {
-    return corners[Math.floor(Math.random() * corners.length)];
-  }
-
-  // 5. رندوم
-  return empty[Math.floor(Math.random() * empty.length)];
+  return move;
 }
 
 // ================= START =================
@@ -79,7 +108,7 @@ bot.start((ctx) => {
   };
 
   ctx.reply(
-`🎮 دوز
+`🎮 دوز شروع شد!
 
 ❌ تو vs ⭕️ ربات
 
@@ -99,7 +128,7 @@ bot.action(/move_(\d+)/, async (ctx) => {
   if (!game) return ctx.answerCbQuery('اول /start بزن');
 
   if (game.board[index]) {
-    return ctx.answerCbQuery('این خونه پره!');
+    return ctx.answerCbQuery('این خانه پر است!');
   }
 
   // حرکت کاربر
@@ -107,7 +136,6 @@ bot.action(/move_(\d+)/, async (ctx) => {
 
   let result = checkWin(game.board);
 
-  // پایان بازی
   if (result) {
     await ctx.editMessageText(getResultText(result), {
       reply_markup: restartKeyboard().reply_markup
@@ -116,7 +144,7 @@ bot.action(/move_(\d+)/, async (ctx) => {
     return;
   }
 
-  // حرکت ربات
+  // حرکت ربات (Minimax AI)
   const aiIndex = aiMove(game.board);
   game.board[aiIndex] = '⭕️';
 
@@ -125,7 +153,7 @@ bot.action(/move_(\d+)/, async (ctx) => {
   await ctx.editMessageText(
     result
       ? getResultText(result)
-      : '🤖 حرکت من...\n\nنوبت تو 😎👇',
+      : '🤖 فکر کردم... نوبت تو 😎👇',
     {
       reply_markup: result
         ? restartKeyboard().reply_markup
@@ -136,7 +164,7 @@ bot.action(/move_(\d+)/, async (ctx) => {
   if (result) delete games[id];
 });
 
-// ================= RESTART BUTTON =================
+// ================= RESTART =================
 function restartKeyboard() {
   return {
     reply_markup: {
@@ -147,7 +175,6 @@ function restartKeyboard() {
   };
 }
 
-// ================= RESTART GAME =================
 bot.action('restart', async (ctx) => {
   const id = ctx.chat.id;
 
@@ -167,17 +194,17 @@ bot.action('restart', async (ctx) => {
   );
 });
 
-// ================= RESULT TEXT =================
+// ================= RESULT =================
 function getResultText(result) {
-  if (result === '❌') return '🏆 تبریک! تو بردی!';
-  if (result === '⭕️') return '😈 ربات برد!';
+  if (result === '❌') return '🏆 تو بردی (خیلی کم پیش میاد 😄)';
+  if (result === '⭕️') return '😈 من بردم!';
   if (result === 'draw') return '🤝 مساوی شد!';
   return '';
 }
 
 // ================= RUN =================
 bot.launch()
-  .then(() => console.log('🤖 XO Bot Running'))
+  .then(() => console.log('🤖 XO Minimax Bot Running'))
   .catch(err => console.error('❌ Error:', err));
 
 // ================= STOP =================
