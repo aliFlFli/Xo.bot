@@ -1,0 +1,5 @@
+{
+    "require": {
+        "juniora/bale-bot-sdk": "*"
+    }
+}
