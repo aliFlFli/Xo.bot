@@ -1,34 +1,37 @@
-const { BaleBot } = require('node-bale-sdk');
+const axios = require('axios');
 require('dotenv').config();
+const express = require('express');
 
-const token = process.env.BOT_TOKEN;
-const bot = new BaleBot(token);
+const app = express();
+app.use(express.json());
+
+const TOKEN = process.env.BOT_TOKEN;
+const API_URL = `https://tapi.bale.ai/bot${TOKEN}`;
 
 console.log('🤖 ربات در حال روشن شدن...');
 
-// وقتی ربات آماده شد
-bot.on('ready', () => {
-    console.log('✅ ربات با موفقیت روشن شد!');
-    console.log('📡 منتظر پیام‌ها هستم...');
+// Webhook receiver
+app.post('/webhook', async (req, res) => {
+    const message = req.body.message;
+    if (message && message.text) {
+        const chatId = message.chat.id;
+        const text = message.text;
+        
+        console.log(`📩 پیام: ${text}`);
+        
+        // پاسخ دادن
+        await axios.post(`${API_URL}/sendMessage`, {
+            chat_id: chatId,
+            text: `سلام! شما گفتید: ${text}`
+        });
+    }
+    res.sendStatus(200);
 });
 
-// وقتی پیام میاد
-bot.on('message', (ctx) => {
-    const chatId = ctx.chat.id;
-    const text = ctx.text;
-    
-    console.log(`📩 پیام جدید از ${chatId}: ${text}`);
-    
-    // فقط یه جواب ساده برگردون
-    bot.sendMessage(chatId, `سلام! پیام شما رسید: ${text}`);
-});
+// Keep alive
+app.get('/', (req, res) => res.send('Bot is alive'));
 
-// اگه خطایی پیش اومد
-bot.on('error', (err) => {
-    console.error('❌ خطا:', err);
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`✅ ربات روی پورت ${PORT} روشن شد!`);
 });
-
-// استارت ربات
-bot.start()
-    .then(() => console.log('🚀 ربات استارت خورد!'))
-    .catch(console.error);
