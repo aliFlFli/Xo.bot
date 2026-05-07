@@ -1,6 +1,5 @@
 const express = require('express');
 const axios = require('axios');
-const Database = require('better-sqlite3');
 require('dotenv').config();
 
 const app = express();
@@ -9,395 +8,352 @@ app.use(express.json());
 const TOKEN = process.env.BOT_TOKEN;
 const API_URL = `https://tapi.bale.ai/bot${TOKEN}`;
 
-// ========== دیتابیس ==========
-const db = new Database('minesweeper.db');
-db.pragma('journal_mode = WAL');
+// ========== دیتابیس ساده (فایل JSON) ==========
+const fs = require('fs');
+const DB_FILE = 'data.json';
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    user_id INTEGER PRIMARY KEY,
-    coins INTEGER DEFAULT 100,
-    wins INTEGER DEFAULT 0,
-    losses INTEGER DEFAULT 0,
-    games_played INTEGER DEFAULT 0,
-    name TEXT DEFAULT 'کاربر'
-  )
-`);
-
-function getUser(userId) {
-  let user = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
-  if (!user) {
-    db.prepare('INSERT INTO users (user_id) VALUES (?)').run(userId);
-    user = db.prepare('SELECT * FROM users WHERE user_id = ?').get(userId);
+function loadData() {
+  try {
+    return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+  } catch {
+    return { users: {}, games: {} };
   }
-  return user;
 }
 
-function updateUser(userId, coins, wins, losses, gamesPlayed) {
-  db.prepare(`UPDATE users SET coins = ?, wins = ?, losses = ?, games_played = ? WHERE user_id = ?`)
-    .run(coins, wins, losses, gamesPlayed, userId);
+function saveData(data) {
+  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
 // ========== تنظیمات بازی ==========
-const DIFFICULTY = {
+const BOARDS = {
   easy: { size: 4, mines: 2, name: '🍃 آسان', coin: 10 },
   normal: { size: 5, mines: 5, name: '⚙️ معمولی', coin: 25 },
-  hard: { size: 6, mines: 10, name: '🔥 سخت', coin: 50 },
-  expert: { size: 8, mines: 20, name: '💀 حرفه‌ای', coin: 100 }
+  hard: { size: 6, mines: 10, name: '🔥 سخت', coin: 50 }
 };
 
-// ========== منوی اصلی ==========
-function getMainMenu() {
-  return {
-    inline_keyboard: [
-      [{ text: '🎮 بازی جدید', callback_data: 'new_game' }],
-      [{ text: '💰 کیف پول', callback_data: 'wallet' }, { text: '📊 آمار', callback_data: 'stats' }],
-      [{ text: '🏆 لیدربورد', callback_data: 'leaderboard' }, { text: '❓ راهنما', callback_data: 'help' }]
-    ]
-  };
+function createBoard(size, mines, firstClick) {
+  const total = size * size;
+  let board = Array(total).fill(0);
+  
+  // مین گذاری
+  const safe = new Set();
+  safe.add(firstClick);
+  const x = Math.floor(firstClick / size);
+  const y = firstClick % size;
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && nx < size && ny >= 0 && ny < size) {
+        safe.add(nx * size + ny);
+      }
+    }
+  }
+  
+  let positions = [];
+  for (let i = 0; i < total; i++) if (!safe.has(i)) positions.push(i);
+  for (let i = 0; i < mines; i++) {
+    const rand = Math.floor(Math.random() * positions.length);
+    board[positions[rand]] = '💣';
+    positions.splice(rand, 1);
+  }
+  
+  // اعداد
+  for (let i = 0; i < total; i++) {
+    if (board[i] === '💣') continue;
+    let count = 0;
+    const cx = Math.floor(i / size);
+    const cy = i % size;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx >= 0 && nx < size && ny >= 0 && ny < size) {
+          if (board[nx * size + ny] === '💣') count++;
+        }
+      }
+    }
+    board[i] = count;
+  }
+  
+  return board;
 }
 
-// ========== کلاس بازی ==========
-class MinesweeperGame {
-  constructor(size, minesCount, difficulty, userId, gameId, chatId) {
-    this.gameId = gameId;
-    this.chatId = chatId;
-    this.userId = userId;
-    this.size = size;
-    this.minesCount = minesCount;
-    this.difficulty = difficulty;
-    this.board = Array(size * size).fill(0);
-    this.revealed = Array(size * size).fill(false);
-    this.flags = Array(size * size).fill(false);
-    this.alive = true;
-    this.opened = 0;
-    this.startTime = Date.now();
-    this.minesPlaced = false;
+// ========== رندر بازی ==========
+function renderGame(board, revealed, flags, size) {
+  const rows = [];
+  for (let i = 0; i < size; i++) {
+    const row = [];
+    for (let j = 0; j < size; j++) {
+      const idx = i * size + j;
+      let char = '◻️';
+      if (revealed[idx]) {
+        if (board[idx] === '💣') char = '💣';
+        else if (board[idx] === 0) char = '◽';
+        else char = `${board[idx]}️⃣`;
+      } else if (flags[idx]) {
+        char = '🚩';
+      }
+      row.push({ text: char, callback_data: `open_${idx}` });
+    }
+    rows.push(row);
   }
+  rows.push([
+    { text: '🏠 منو', callback_data: 'menu' },
+    { text: '🔄 جدید', callback_data: 'new' }
+  ]);
+  return { inline_keyboard: rows };
+}
 
-  placeMines(firstIdx) {
-    const safe = new Set();
-    safe.add(firstIdx);
-    const x = Math.floor(firstIdx / this.size);
-    const y = firstIdx % this.size;
+// ========== باز کردن سلول ==========
+function revealCell(board, revealed, flags, size, idx) {
+  if (revealed[idx] || flags[idx]) return false;
+  if (board[idx] === '💣') return false;
+  
+  revealed[idx] = true;
+  
+  if (board[idx] === 0) {
+    const x = Math.floor(idx / size);
+    const y = idx % size;
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         const nx = x + dx, ny = y + dy;
-        if (nx >= 0 && nx < this.size && ny >= 0 && ny < this.size) {
-          safe.add(nx * this.size + ny);
-        }
-      }
-    }
-    
-    let candidates = [];
-    for (let i = 0; i < this.board.length; i++) {
-      if (!safe.has(i)) candidates.push(i);
-    }
-    
-    for (let i = candidates.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
-    }
-    
-    for (let i = 0; i < this.minesCount && i < candidates.length; i++) {
-      this.board[candidates[i]] = '💣';
-    }
-    this.calcNumbers();
-    this.minesPlaced = true;
-  }
-
-  calcNumbers() {
-    for (let i = 0; i < this.board.length; i++) {
-      if (this.board[i] === '💣') continue;
-      let count = 0;
-      const x = Math.floor(i / this.size);
-      const y = i % this.size;
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dy = -1; dy <= 1; dy++) {
-          const nx = x + dx, ny = y + dy;
-          if (nx >= 0 && nx < this.size && ny >= 0 && ny < this.size) {
-            if (this.board[nx * this.size + ny] === '💣') count++;
-          }
-        }
-      }
-      this.board[i] = count;
-    }
-  }
-
-  reveal(idx) {
-    if (this.revealed[idx] || this.flags[idx]) return false;
-    this.revealed[idx] = true;
-    this.opened++;
-    
-    if (this.board[idx] === 0) {
-      const x = Math.floor(idx / this.size);
-      const y = idx % this.size;
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dy = -1; dy <= 1; dy++) {
-          const nx = x + dx, ny = y + dy;
-          if (nx >= 0 && nx < this.size && ny >= 0 && ny < this.size) {
-            const nidx = nx * this.size + ny;
-            if (!this.revealed[nidx] && !this.flags[nidx] && this.board[nidx] !== '💣') {
-              this.reveal(nidx);
-            }
+        if (nx >= 0 && nx < size && ny >= 0 && ny < size) {
+          const nidx = nx * size + ny;
+          if (!revealed[nidx] && !flags[nidx] && board[nidx] !== '💣') {
+            revealCell(board, revealed, flags, size, nidx);
           }
         }
       }
     }
-    return true;
   }
-
-  checkWin() {
-    return this.opened === this.board.length - this.minesCount;
-  }
-  
-  revealAllMines() {
-    for (let i = 0; i < this.board.length; i++) {
-      if (this.board[i] === '💣') this.revealed[i] = true;
-    }
-  }
+  return true;
 }
 
-// ========== بازی‌های فعال ==========
-const games = new Map();
-let lastUpdateId = 0;
+function checkWin(board, revealed, mines, size) {
+  let opened = 0;
+  for (let i = 0; i < size * size; i++) {
+    if (revealed[i]) opened++;
+  }
+  return opened === (size * size) - mines;
+}
 
 // ========== ارسال پیام ==========
-async function sendMessage(chatId, text, keyboard = null) {
+async function send(chatId, text, keyboard = null) {
   try {
     await axios.post(`${API_URL}/sendMessage`, {
       chat_id: chatId,
       text: text,
       reply_markup: keyboard
     });
-  } catch (err) {
-    console.error('ارسال پیام خطا:', err.message);
-  }
+  } catch (e) { console.log(e.message); }
 }
 
-async function editMessage(chatId, messageId, text, keyboard = null) {
+async function edit(chatId, msgId, text, keyboard = null) {
   try {
     await axios.post(`${API_URL}/editMessageText`, {
       chat_id: chatId,
-      message_id: messageId,
+      message_id: msgId,
       text: text,
       reply_markup: keyboard
     });
-  } catch (err) {
-    console.error('ویرایش پیام خطا:', err.message);
-  }
+  } catch (e) { console.log(e.message); }
 }
 
-// ========== رندر بازی ==========
-function renderGame(game) {
-  const rows = [];
-  for (let i = 0; i < game.size; i++) {
-    const row = [];
-    for (let j = 0; j < game.size; j++) {
-      const idx = i * game.size + j;
-      let emoji = '⬜';
-      if (game.revealed[idx]) {
-        if (game.board[idx] === '💣') emoji = '💣';
-        else if (game.board[idx] === 0) emoji = '▪️';
-        else emoji = `${game.board[idx]}️⃣`;
-      } else if (game.flags[idx]) {
-        emoji = '🚩';
-      }
-      row.push({ text: emoji, callback_data: `cell_${game.gameId}_${idx}` });
+async function answer(cbId) {
+  try {
+    await axios.post(`${API_URL}/answerCallbackQuery`, { callback_query_id: cbId });
+  } catch (e) {}
+}
+
+// ========== منو ==========
+function mainMenu() {
+  return {
+    inline_keyboard: [
+      [{ text: '🎮 شروع بازی', callback_data: 'start_game' }],
+      [{ text: '💰 سکه من', callback_data: 'my_coins' }],
+      [{ text: '📊 آمار', callback_data: 'my_stats' }]
+    ]
+  };
+}
+
+// ========== پردازش ==========
+let lastId = 0;
+let gameStates = {}; // gameId -> { board, revealed, flags, size, mines, level, userId, startTime }
+
+async function processUpdate(upd) {
+  // پیام
+  if (upd.message && upd.message.text === '/start') {
+    const data = loadData();
+    if (!data.users[upd.message.from.id]) {
+      data.users[upd.message.from.id] = { coins: 100, wins: 0, losses: 0 };
+      saveData(data);
     }
-    rows.push(row);
-  }
-  rows.push([
-    { text: '🚩 پرچم', callback_data: `flag_${game.gameId}` },
-    { text: '🏠 منو', callback_data: 'main_menu' }
-  ]);
-  return { inline_keyboard: rows };
-}
-
-// ========== پردازش کلیک ==========
-async function handleCell(game, userId, chatId, messageId, idx) {
-  if (game.userId !== userId) return;
-  if (!game.alive) return;
-  if (game.revealed[idx] || game.flags[idx]) return;
-  
-  if (!game.minesPlaced) {
-    game.placeMines(idx);
-  }
-  
-  if (game.board[idx] === '💣') {
-    game.alive = false;
-    game.revealAllMines();
-    await editMessage(chatId, messageId, 
-      `💥 باختی! 💀\n⏱️ زمان: ${Math.floor((Date.now() - game.startTime) / 1000)} ثانیه`, 
-      renderGame(game));
+    const user = data.users[upd.message.from.id];
+    await send(upd.message.chat.id, 
+      `🎯 مین‌روب بله\n\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins}\n💀 باخت: ${user.losses}`,
+      mainMenu());
     return;
   }
   
-  game.reveal(idx);
-  
-  if (game.checkWin()) {
-    game.alive = false;
-    const time = Math.floor((Date.now() - game.startTime) / 1000);
-    const reward = DIFFICULTY[game.difficulty].coin;
-    const user = getUser(userId);
-    const newCoins = user.coins + reward;
-    updateUser(userId, newCoins, user.wins + 1, user.losses, user.games_played + 1);
-    
-    await editMessage(chatId, messageId, 
-      `🎉 بردی! 🎉\n💰 +${reward} سکه\n⏱️ زمان: ${time} ثانیه\n💎 سکه کل: ${newCoins}`,
-      renderGame(game));
-    return;
-  }
-  
-  const elapsed = Math.floor((Date.now() - game.startTime) / 1000);
-  await editMessage(chatId, messageId, 
-    `💣 ${DIFFICULTY[game.difficulty].name}\n🎯 ${game.opened}/${game.board.length - game.minesCount} | ⏱️ ${elapsed}s`, 
-    renderGame(game));
-}
-
-// ========== تابع پردازش آپدیت ==========
-async function processUpdate(update) {
-  // پیام متنی
-  if (update.message && update.message.text) {
-    const chatId = update.message.chat.id;
-    const userId = update.message.from.id;
-    const text = update.message.text;
-    
-    if (text === '/start') {
-      const user = getUser(userId);
-      await sendMessage(chatId, 
-        `🎯 مین‌روب حرفه‌ای\n\n👤 ${user.name}\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins} | باخت: ${user.losses}`,
-        getMainMenu());
-    }
-    return true;
-  }
-  
-  // کالبک دکمه‌ها
-  if (update.callback_query) {
-    const cb = update.callback_query;
+  // کالبک
+  if (upd.callback_query) {
+    const cb = upd.callback_query;
     const data = cb.data;
     const chatId = cb.message.chat.id;
+    const msgId = cb.message.message_id;
     const userId = cb.from.id;
-    const messageId = cb.message.message_id;
     
-    // پاسخ به کالبک (برای رفع loading)
-    await axios.post(`${API_URL}/answerCallbackQuery`, {
-      callback_query_id: cb.id
-    }).catch(() => {});
+    await answer(cb.id);
     
-    if (data === 'main_menu') {
-      const user = getUser(userId);
-      await editMessage(chatId, messageId,
-        `🎯 منوی اصلی\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins}`,
-        getMainMenu());
+    if (data === 'menu') {
+      const userData = loadData().users[userId] || { coins: 100, wins: 0, losses: 0 };
+      await edit(chatId, msgId,
+        `🎯 منوی اصلی\n💰 سکه: ${userData.coins}\n🏆 برد: ${userData.wins}`,
+        mainMenu());
     }
-    else if (data === 'new_game') {
+    else if (data === 'start_game') {
       const keyboard = {
         inline_keyboard: [
-          [{ text: '🍃 آسان (10 سکه)', callback_data: 'diff_easy' }],
-          [{ text: '⚙️ معمولی (25 سکه)', callback_data: 'diff_normal' }],
-          [{ text: '🔥 سخت (50 سکه)', callback_data: 'diff_hard' }],
-          [{ text: '💀 حرفه‌ای (100 سکه)', callback_data: 'diff_expert' }]
+          [{ text: '🍃 آسان', callback_data: 'level_easy' }],
+          [{ text: '⚙️ معمولی', callback_data: 'level_normal' }],
+          [{ text: '🔥 سخت', callback_data: 'level_hard' }]
         ]
       };
-      await editMessage(chatId, messageId, '🎲 سطح را انتخاب کن:', keyboard);
+      await edit(chatId, msgId, '🎲 سطح را انتخاب کن:', keyboard);
     }
-    else if (data.startsWith('diff_')) {
-      const level = data.replace('diff_', '');
-      const config = DIFFICULTY[level];
+    else if (data === 'my_coins') {
+      const userData = loadData().users[userId] || { coins: 100 };
+      await edit(chatId, msgId, `💰 سکه شما: ${userData.coins} 🪙`, mainMenu());
+    }
+    else if (data === 'my_stats') {
+      const u = loadData().users[userId] || { wins: 0, losses: 0, coins: 100 };
+      await edit(chatId, msgId, 
+        `📊 آمار شما\n🏆 برد: ${u.wins}\n💀 باخت: ${u.losses}\n💰 سکه: ${u.coins}`,
+        mainMenu());
+    }
+    else if (data.startsWith('level_')) {
+      const level = data.replace('level_', '');
+      const config = BOARDS[level];
       const gameId = `${chatId}_${userId}_${Date.now()}`;
-      const game = new MinesweeperGame(config.size, config.mines, level, userId, gameId, chatId);
-      games.set(`${chatId}_${userId}`, game);
-      await editMessage(chatId, messageId, 
-        `🎮 ${config.name}\n💰 جایزه: ${config.coin} سکه\n⬜ برای شروع کلیک کن!`,
-        renderGame(game));
+      
+      gameStates[gameId] = {
+        size: config.size,
+        mines: config.mines,
+        level: level,
+        userId: userId,
+        board: null,
+        revealed: Array(config.size * config.size).fill(false),
+        flags: Array(config.size * config.size).fill(false),
+        startTime: Date.now(),
+        firstMove: true
+      };
+      
+      // نمایش تخته خالی
+      const dummyBoard = Array(config.size * config.size).fill(0);
+      await edit(chatId, msgId,
+        `🎮 ${config.name} | 💰 جایزه: ${config.coin}`,
+        renderGame(dummyBoard, gameStates[gameId].revealed, gameStates[gameId].flags, config.size));
+      
+      // ذخیره gameId برای ادامه
+      gameStates[gameId].messageId = msgId;
+      gameStates[gameId].chatId = chatId;
     }
-    else if (data === 'wallet') {
-      const user = getUser(userId);
-      await editMessage(chatId, messageId, 
-        `💰 کیف پول\n\nسکه: ${user.coins} 🪙\n\nهر برد: +۱۰ تا +۱۰۰ سکه`, 
-        getMainMenu());
-    }
-    else if (data === 'stats') {
-      const user = getUser(userId);
-      const winRate = user.games_played > 0 ? ((user.wins / user.games_played) * 100).toFixed(1) : 0;
-      await editMessage(chatId, messageId,
-        `📊 آمار شما\n\n🏆 برد: ${user.wins}\n💀 باخت: ${user.losses}\n🎮 بازی: ${user.games_played}\n💰 سکه: ${user.coins}\n📈 نرخ برد: ${winRate}%`,
-        getMainMenu());
-    }
-    else if (data === 'leaderboard') {
-      const top = db.prepare('SELECT user_id, wins, name FROM users ORDER BY wins DESC LIMIT 5').all();
-      let msg = '🏆 برترین‌ها:\n\n';
-      for (let i = 0; i < top.length; i++) {
-        msg += `${i+1}. ${top[i].name || 'کاربر'} — ${top[i].wins} برد\n`;
+    else if (data.startsWith('open_')) {
+      const idx = parseInt(data.replace('open_', ''));
+      
+      // پیدا کردن بازی فعال کاربر
+      let currentGame = null;
+      let currentGameId = null;
+      for (let [gid, game] of Object.entries(gameStates)) {
+        if (game.userId === userId && game.board !== null) {
+          currentGame = game;
+          currentGameId = gid;
+          break;
+        }
       }
-      const user = getUser(userId);
-      msg += `\n📊 شما: ${user.wins} برد`;
-      await editMessage(chatId, messageId, msg, getMainMenu());
-    }
-    else if (data === 'help') {
-      await editMessage(chatId, messageId,
-        `📖 راهنمای بازی\n\n🎯 هدف: همه سلول‌های بدون مین رو باز کن\n🚩 با دکمه پرچم می‌تونی روی مین‌ها پرچم بزاری\n💰 هر برد سکه میدی\n🎮 سطوح مختلف جایزه متفاوت دارن`,
-        getMainMenu());
-    }
-    else if (data.startsWith('flag_')) {
-      const gameKey = `${chatId}_${userId}`;
-      const game = games.get(gameKey);
-      if (game && game.alive) {
-        // تغییر حالت پرچم - فعلاً ساده
+      
+      // اگه بازی تازه شروع شده
+      if (!currentGame) {
+        for (let [gid, game] of Object.entries(gameStates)) {
+          if (game.userId === userId && game.firstMove === true) {
+            currentGame = game;
+            currentGameId = gid;
+            const config = BOARDS[game.level];
+            game.board = createBoard(config.size, config.mines, idx);
+            game.firstMove = false;
+            break;
+          }
+        }
       }
-    }
-    else if (data.startsWith('cell_')) {
-      const parts = data.split('_');
-      const gameId = parts[1];
-      const idx = parseInt(parts[2]);
-      const gameKey = `${chatId}_${userId}`;
-      const game = games.get(gameKey);
-      if (game && game.gameId === gameId && game.alive) {
-        await handleCell(game, userId, chatId, messageId, idx);
+      
+      if (!currentGame || currentGame.board === null) return;
+      
+      const config = BOARDS[currentGame.level];
+      
+      // چک مین
+      if (currentGame.board[idx] === '💣') {
+        // باخت
+        const allData = loadData();
+        if (!allData.users[userId]) allData.users[userId] = { coins: 100, wins: 0, losses: 0 };
+        allData.users[userId].losses++;
+        saveData(allData);
+        
+        // نمایش همه مین‌ها
+        for (let i = 0; i < currentGame.board.length; i++) {
+          if (currentGame.board[i] === '💣') currentGame.revealed[i] = true;
+        }
+        await edit(chatId, msgId,
+          `💥 باختی! 💀\n⏱️ زمان: ${Math.floor((Date.now() - currentGame.startTime) / 1000)} ثانیه`,
+          renderGame(currentGame.board, currentGame.revealed, currentGame.flags, currentGame.size));
+        
+        delete gameStates[currentGameId];
+        return;
       }
+      
+      // باز کردن
+      revealCell(currentGame.board, currentGame.revealed, currentGame.flags, currentGame.size, idx);
+      
+      // چک برد
+      if (checkWin(currentGame.board, currentGame.revealed, currentGame.mines, currentGame.size)) {
+        const reward = config.coin;
+        const allData = loadData();
+        if (!allData.users[userId]) allData.users[userId] = { coins: 100, wins: 0, losses: 0 };
+        allData.users[userId].coins += reward;
+        allData.users[userId].wins++;
+        saveData(allData);
+        
+        await edit(chatId, msgId,
+          `🎉 بردی! 🎉\n💰 +${reward} سکه\n⏱️ زمان: ${Math.floor((Date.now() - currentGame.startTime) / 1000)} ثانیه\n💎 موجودی: ${allData.users[userId].coins}`,
+          renderGame(currentGame.board, currentGame.revealed, currentGame.flags, currentGame.size));
+        
+        delete gameStates[currentGameId];
+        return;
+      }
+      
+      // بروزرسانی تخته
+      await edit(chatId, msgId,
+        `💣 ${config.name}\n🎯 مرحله در حال پیشرفت...`,
+        renderGame(currentGame.board, currentGame.revealed, currentGame.flags, currentGame.size));
     }
-    return true;
   }
-  return false;
 }
 
-// ========== دریافت آپدیت ==========
-async function pollUpdates() {
+// ========== پولینگ ==========
+async function poll() {
   try {
-    const response = await axios.post(`${API_URL}/getUpdates`, {
-      offset: lastUpdateId + 1,
+    const res = await axios.post(`${API_URL}/getUpdates`, {
+      offset: lastId + 1,
       timeout: 30
     });
     
-    const updates = response.data.result;
-    if (updates && updates.length > 0) {
-      console.log(`📨 دریافت ${updates.length} آپدیت جدید`);
-      
-      for (const update of updates) {
-        await processUpdate(update);
-        lastUpdateId = update.update_id;
-      }
+    for (const upd of res.data.result) {
+      await processUpdate(upd);
+      if (upd.update_id > lastId) lastId = upd.update_id;
     }
-  } catch (error) {
-    if (error.code !== 'ECONNRESET' && error.code !== 'ETIMEDOUT') {
-      console.error('❌ خطا در دریافت آپدیت:', error.message);
-    }
-  }
+  } catch(e) {}
 }
 
-// ========== سرور اکسپرس ==========
-app.get('/', (req, res) => res.send('🎮 مین‌روب آنلاین است'));
-
-app.post('/webhook', async (req, res) => {
-  await processUpdate(req.body);
-  res.sendStatus(200);
-});
+setInterval(poll, 1500);
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`🚀 مین‌روب روی پورت ${PORT} روشن شد!`);
-});
-
-// Polling با تاخیر مناسب
-setInterval(pollUpdates, 1500);
+app.listen(PORT, () => console.log(`🚀 ربات روی پورت ${PORT} روشن شد!`));
+app.get('/', (req, res) => res.send('ربات آنلاین است'));
