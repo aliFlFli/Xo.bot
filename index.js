@@ -10,33 +10,44 @@ const API_URL = `https://tapi.bale.ai/bot${TOKEN}`;
 
 console.log('🤖 ربات در حال راه‌اندازی...');
 
-app.post('/webhook', async (req, res) => {
-    try {
-        const message = req.body.message;
-        if (message && message.text) {
-            const chatId = message.chat.id;
-            const text = message.text;
-            
-            console.log(`📩 پیام دریافت شد: ${text}`);
-            
-            await axios.post(`${API_URL}/sendMessage`, {
-                chat_id: chatId,
-                text: `✅ پیام شما رسید: ${text}`
-            });
-        }
-        res.sendStatus(200);
-    } catch (error) {
-        console.error('❌ خطا:', error.message);
-        res.sendStatus(500);
-    }
-});
+// دریافت پیام‌ها با روش Polling
+let lastUpdateId = 0;
 
-app.get('/', (req, res) => {
-    res.send('🤖 ربات آنلاین است!');
-});
+async function getUpdates() {
+    try {
+        const response = await axios.post(`${API_URL}/getUpdates`, {
+            offset: lastUpdateId + 1,
+            timeout: 30
+        });
+        
+        for (const update of response.data.result) {
+            lastUpdateId = update.update_id;
+            
+            if (update.message && update.message.text) {
+                const chatId = update.message.chat.id;
+                const text = update.message.text;
+                
+                console.log(`📩 پیام از ${chatId}: ${text}`);
+                
+                await axios.post(`${API_URL}/sendMessage`, {
+                    chat_id: chatId,
+                    text: `✅ شما گفتید: ${text}`
+                });
+            }
+        }
+    } catch (error) {
+        console.error('خطا:', error.message);
+    }
+}
+
+// هر ۱ ثانیه یک بار چک کن
+setInterval(getUpdates, 1000);
+
+// برای اینکه Railway خوابش نبره
+app.get('/', (req, res) => res.send('ربات آنلاین است'));
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`✅ ربات روی پورت ${PORT} راه‌اندازی شد!`);
-    console.log(`📡 آدرس وب‌هوک: https://your-app.railway.app/webhook`);
+    console.log(`✅ ربات روی پورت ${PORT} روشن شد!`);
+    console.log('🚀 آماده دریافت پیام است...');
 });
