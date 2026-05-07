@@ -1,7 +1,6 @@
 const express = require('express');
 const axios = require('axios');
 const Database = require('better-sqlite3');
-const crypto = require('crypto');
 require('dotenv').config();
 
 const app = express();
@@ -48,15 +47,15 @@ const DIFFICULTY = {
 };
 
 // ========== منوی اصلی ==========
-const MAIN_MENU = {
-  reply_markup: {
+function getMainMenu() {
+  return {
     inline_keyboard: [
       [{ text: '🎮 بازی جدید', callback_data: 'new_game' }],
       [{ text: '💰 کیف پول', callback_data: 'wallet' }, { text: '📊 آمار', callback_data: 'stats' }],
       [{ text: '🏆 لیدربورد', callback_data: 'leaderboard' }, { text: '❓ راهنما', callback_data: 'help' }]
     ]
-  }
-};
+  };
+}
 
 // ========== کلاس بازی ==========
 class MinesweeperGame {
@@ -100,7 +99,7 @@ class MinesweeperGame {
       [candidates[i], candidates[j]] = [candidates[j], candidates[i]];
     }
     
-    for (let i = 0; i < this.minesCount; i++) {
+    for (let i = 0; i < this.minesCount && i < candidates.length; i++) {
       this.board[candidates[i]] = '💣';
     }
     this.calcNumbers();
@@ -151,10 +150,17 @@ class MinesweeperGame {
   checkWin() {
     return this.opened === this.board.length - this.minesCount;
   }
+  
+  revealAllMines() {
+    for (let i = 0; i < this.board.length; i++) {
+      if (this.board[i] === '💣') this.revealed[i] = true;
+    }
+  }
 }
 
 // ========== بازی‌های فعال ==========
 const games = new Map();
+let lastUpdateId = 0;
 
 // ========== ارسال پیام ==========
 async function sendMessage(chatId, text, keyboard = null) {
@@ -210,9 +216,7 @@ function renderGame(game) {
 
 // ========== پردازش کلیک ==========
 async function handleCell(game, userId, chatId, messageId, idx) {
-  if (game.userId !== userId) {
-    return;
-  }
+  if (game.userId !== userId) return;
   if (!game.alive) return;
   if (game.revealed[idx] || game.flags[idx]) return;
   
@@ -222,10 +226,10 @@ async function handleCell(game, userId, chatId, messageId, idx) {
   
   if (game.board[idx] === '💣') {
     game.alive = false;
-    for (let i = 0; i < game.board.length; i++) {
-      if (game.board[i] === '💣') game.revealed[i] = true;
-    }
-    await editMessage(chatId, messageId, `💥 باختی! 💀\nزمان: ${Math.floor((Date.now() - game.startTime) / 1000)} ثانیه`, renderGame(game));
+    game.revealAllMines();
+    await editMessage(chatId, messageId, 
+      `💥 باختی! 💀\n⏱️ زمان: ${Math.floor((Date.now() - game.startTime) / 1000)} ثانیه`, 
+      renderGame(game));
     return;
   }
   
@@ -245,132 +249,155 @@ async function handleCell(game, userId, chatId, messageId, idx) {
     return;
   }
   
+  const elapsed = Math.floor((Date.now() - game.startTime) / 1000);
   await editMessage(chatId, messageId, 
-    `💣 ${DIFFICULTY[game.difficulty].name}\n🎯 ${game.opened}/${game.board.length - game.minesCount}`, 
+    `💣 ${DIFFICULTY[game.difficulty].name}\n🎯 ${game.opened}/${game.board.length - game.minesCount} | ⏱️ ${elapsed}s`, 
     renderGame(game));
 }
 
-// ========== ربات ==========
-let lastUpdateId = 0;
-const flagMode = new Map();
+// ========== تابع پردازش آپدیت ==========
+async function processUpdate(update) {
+  // پیام متنی
+  if (update.message && update.message.text) {
+    const chatId = update.message.chat.id;
+    const userId = update.message.from.id;
+    const text = update.message.text;
+    
+    if (text === '/start') {
+      const user = getUser(userId);
+      await sendMessage(chatId, 
+        `🎯 مین‌روب حرفه‌ای\n\n👤 ${user.name}\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins} | باخت: ${user.losses}`,
+        getMainMenu());
+    }
+    return true;
+  }
+  
+  // کالبک دکمه‌ها
+  if (update.callback_query) {
+    const cb = update.callback_query;
+    const data = cb.data;
+    const chatId = cb.message.chat.id;
+    const userId = cb.from.id;
+    const messageId = cb.message.message_id;
+    
+    // پاسخ به کالبک (برای رفع loading)
+    await axios.post(`${API_URL}/answerCallbackQuery`, {
+      callback_query_id: cb.id
+    }).catch(() => {});
+    
+    if (data === 'main_menu') {
+      const user = getUser(userId);
+      await editMessage(chatId, messageId,
+        `🎯 منوی اصلی\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins}`,
+        getMainMenu());
+    }
+    else if (data === 'new_game') {
+      const keyboard = {
+        inline_keyboard: [
+          [{ text: '🍃 آسان (10 سکه)', callback_data: 'diff_easy' }],
+          [{ text: '⚙️ معمولی (25 سکه)', callback_data: 'diff_normal' }],
+          [{ text: '🔥 سخت (50 سکه)', callback_data: 'diff_hard' }],
+          [{ text: '💀 حرفه‌ای (100 سکه)', callback_data: 'diff_expert' }]
+        ]
+      };
+      await editMessage(chatId, messageId, '🎲 سطح را انتخاب کن:', keyboard);
+    }
+    else if (data.startsWith('diff_')) {
+      const level = data.replace('diff_', '');
+      const config = DIFFICULTY[level];
+      const gameId = `${chatId}_${userId}_${Date.now()}`;
+      const game = new MinesweeperGame(config.size, config.mines, level, userId, gameId, chatId);
+      games.set(`${chatId}_${userId}`, game);
+      await editMessage(chatId, messageId, 
+        `🎮 ${config.name}\n💰 جایزه: ${config.coin} سکه\n⬜ برای شروع کلیک کن!`,
+        renderGame(game));
+    }
+    else if (data === 'wallet') {
+      const user = getUser(userId);
+      await editMessage(chatId, messageId, 
+        `💰 کیف پول\n\nسکه: ${user.coins} 🪙\n\nهر برد: +۱۰ تا +۱۰۰ سکه`, 
+        getMainMenu());
+    }
+    else if (data === 'stats') {
+      const user = getUser(userId);
+      const winRate = user.games_played > 0 ? ((user.wins / user.games_played) * 100).toFixed(1) : 0;
+      await editMessage(chatId, messageId,
+        `📊 آمار شما\n\n🏆 برد: ${user.wins}\n💀 باخت: ${user.losses}\n🎮 بازی: ${user.games_played}\n💰 سکه: ${user.coins}\n📈 نرخ برد: ${winRate}%`,
+        getMainMenu());
+    }
+    else if (data === 'leaderboard') {
+      const top = db.prepare('SELECT user_id, wins, name FROM users ORDER BY wins DESC LIMIT 5').all();
+      let msg = '🏆 برترین‌ها:\n\n';
+      for (let i = 0; i < top.length; i++) {
+        msg += `${i+1}. ${top[i].name || 'کاربر'} — ${top[i].wins} برد\n`;
+      }
+      const user = getUser(userId);
+      msg += `\n📊 شما: ${user.wins} برد`;
+      await editMessage(chatId, messageId, msg, getMainMenu());
+    }
+    else if (data === 'help') {
+      await editMessage(chatId, messageId,
+        `📖 راهنمای بازی\n\n🎯 هدف: همه سلول‌های بدون مین رو باز کن\n🚩 با دکمه پرچم می‌تونی روی مین‌ها پرچم بزاری\n💰 هر برد سکه میدی\n🎮 سطوح مختلف جایزه متفاوت دارن`,
+        getMainMenu());
+    }
+    else if (data.startsWith('flag_')) {
+      const gameKey = `${chatId}_${userId}`;
+      const game = games.get(gameKey);
+      if (game && game.alive) {
+        // تغییر حالت پرچم - فعلاً ساده
+      }
+    }
+    else if (data.startsWith('cell_')) {
+      const parts = data.split('_');
+      const gameId = parts[1];
+      const idx = parseInt(parts[2]);
+      const gameKey = `${chatId}_${userId}`;
+      const game = games.get(gameKey);
+      if (game && game.gameId === gameId && game.alive) {
+        await handleCell(game, userId, chatId, messageId, idx);
+      }
+    }
+    return true;
+  }
+  return false;
+}
 
-async function getUpdates() {
+// ========== دریافت آپدیت ==========
+async function pollUpdates() {
   try {
-    const res = await axios.post(`${API_URL}/getUpdates`, {
+    const response = await axios.post(`${API_URL}/getUpdates`, {
       offset: lastUpdateId + 1,
       timeout: 30
     });
     
-    for (const update of res.data.result) {
-      lastUpdateId = update.update_id;
+    const updates = response.data.result;
+    if (updates && updates.length > 0) {
+      console.log(`📨 دریافت ${updates.length} آپدیت جدید`);
       
-      // پیام متنی
-      if (update.message && update.message.text) {
-        const chatId = update.message.chat.id;
-        const userId = update.message.from.id;
-        const text = update.message.text;
-        
-        if (text === '/start') {
-          const user = getUser(userId);
-          await sendMessage(chatId, 
-            `🎯 مین‌روب حرفه‌ای\n\n👤 ${user.name}\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins} | باخت: ${user.losses}`,
-            MAIN_MENU);
-        }
-      }
-      
-      // کالبک دکمه‌ها
-      if (update.callback_query) {
-        const cb = update.callback_query;
-        const data = cb.data;
-        const chatId = cb.message.chat.id;
-        const userId = cb.from.id;
-        const messageId = cb.message.message_id;
-        
-        if (data === 'main_menu') {
-          const user = getUser(userId);
-          await editMessage(chatId, messageId,
-            `🎯 منوی اصلی\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins}`,
-            MAIN_MENU);
-        }
-        else if (data === 'new_game') {
-          const keyboard = {
-            inline_keyboard: [
-              [{ text: '🍃 آسان (10 سکه)', callback_data: 'diff_easy' }],
-              [{ text: '⚙️ معمولی (25 سکه)', callback_data: 'diff_normal' }],
-              [{ text: '🔥 سخت (50 سکه)', callback_data: 'diff_hard' }],
-              [{ text: '💀 حرفه‌ای (100 سکه)', callback_data: 'diff_expert' }]
-            ]
-          };
-          await editMessage(chatId, messageId, '🎲 سطح را انتخاب کن:', keyboard);
-        }
-        else if (data.startsWith('diff_')) {
-          const level = data.replace('diff_', '');
-          const config = DIFFICULTY[level];
-          const gameId = `${chatId}_${userId}_${Date.now()}`;
-          const game = new MinesweeperGame(config.size, config.mines, level, userId, gameId, chatId);
-          games.set(`${chatId}_${userId}`, game);
-          await editMessage(chatId, messageId, 
-            `🎮 ${config.name}\n💰 جایزه: ${config.coin} سکه`,
-            renderGame(game));
-        }
-        else if (data === 'wallet') {
-          const user = getUser(userId);
-          await editMessage(chatId, messageId, `💰 کیف پول\n\nسکه: ${user.coins} 🪙`, MAIN_MENU);
-        }
-        else if (data === 'stats') {
-          const user = getUser(userId);
-          await editMessage(chatId, messageId,
-            `📊 آمار شما\n\n🏆 برد: ${user.wins}\n💀 باخت: ${user.losses}\n🎮 بازی: ${user.games_played}\n💰 سکه: ${user.coins}`,
-            MAIN_MENU);
-        }
-        else if (data === 'leaderboard') {
-          const top = db.prepare('SELECT user_id, wins, name FROM users ORDER BY wins DESC LIMIT 5').all();
-          let msg = '🏆 برترین‌ها:\n\n';
-          for (let i = 0; i < top.length; i++) {
-            msg += `${i+1}. ${top[i].name || 'کاربر'} — ${top[i].wins} برد\n`;
-          }
-          await editMessage(chatId, messageId, msg, MAIN_MENU);
-        }
-        else if (data === 'help') {
-          await editMessage(chatId, messageId,
-            `📖 راهنما\n\n🎯 سلول‌های بدون مین رو باز کن\n🚩 با دکمه پرچم مین علامت بزن\n💰 برد = سکه بگیر`,
-            MAIN_MENU);
-        }
-        else if (data.startsWith('flag_')) {
-          const gameId = data.replace('flag_', '');
-          const gameKey = `${chatId}_${userId}`;
-          const game = games.get(gameKey);
-          if (game && game.gameId === gameId) {
-            const current = flagMode.get(gameKey) || false;
-            flagMode.set(gameKey, !current);
-            // پاسخ به کالبک از طریق sendMessage ساده
-          }
-        }
-        else if (data.startsWith('cell_')) {
-          const parts = data.split('_');
-          const gameId = parts[1];
-          const idx = parseInt(parts[2]);
-          const gameKey = `${chatId}_${userId}`;
-          const game = games.get(gameKey);
-          if (game && game.gameId === gameId && game.alive) {
-            await handleCell(game, userId, chatId, messageId, idx);
-          }
-        }
-        
-        // پاسخ به کالبک
-        await axios.post(`${API_URL}/answerCallbackQuery`, {
-          callback_query_id: cb.id
-        });
+      for (const update of updates) {
+        await processUpdate(update);
+        lastUpdateId = update.update_id;
       }
     }
-  } catch (err) {
-    console.error('دریافت خطا:', err.message);
+  } catch (error) {
+    if (error.code !== 'ECONNRESET' && error.code !== 'ETIMEDOUT') {
+      console.error('❌ خطا در دریافت آپدیت:', error.message);
+    }
   }
 }
 
-setInterval(getUpdates, 1000);
-
+// ========== سرور اکسپرس ==========
 app.get('/', (req, res) => res.send('🎮 مین‌روب آنلاین است'));
 
+app.post('/webhook', async (req, res) => {
+  await processUpdate(req.body);
+  res.sendStatus(200);
+});
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 مین‌روب روی پورت ${PORT} روشن شد!`));
+app.listen(PORT, () => {
+  console.log(`🚀 مین‌روب روی پورت ${PORT} روشن شد!`);
+});
+
+// Polling با تاخیر مناسب
+setInterval(pollUpdates, 1500);
