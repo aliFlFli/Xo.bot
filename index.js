@@ -4,7 +4,6 @@ const express = require('express');
 const axios = require('axios');
 
 const app = express();
-
 app.use(express.json());
 
 // =========================
@@ -12,10 +11,26 @@ app.use(express.json());
 // =========================
 
 const TOKEN = process.env.BALE_TOKEN;
+const PORT = process.env.PORT || 3000;
+
+// مهم: Railway URL
+const BASE_URL = process.env.BASE_URL; 
+// مثلا: https://your-app.up.railway.app
 
 const API = `https://tapi.bale.ai/bot${TOKEN}`;
+const WEBHOOK_PATH = '/webhook';
 
-const PORT = process.env.PORT || 3000;
+// =========================
+// ERROR HANDLING (خیلی مهم)
+// =========================
+
+process.on('uncaughtException', (err) => {
+  console.log('🔥 CRASH:', err);
+});
+
+process.on('unhandledRejection', (err) => {
+  console.log('🔥 PROMISE ERROR:', err);
+});
 
 // =========================
 // SEND MESSAGE
@@ -23,15 +38,10 @@ const PORT = process.env.PORT || 3000;
 
 async function sendMessage(chatId, text, keyboard = null) {
   try {
-    const payload = {
-      chat_id: chatId,
-      text
-    };
+    const payload = { chat_id: chatId, text };
 
     if (keyboard) {
-      payload.reply_markup = {
-        inline_keyboard: keyboard
-      };
+      payload.reply_markup = { inline_keyboard: keyboard };
     }
 
     await axios.post(`${API}/sendMessage`, payload);
@@ -42,13 +52,13 @@ async function sendMessage(chatId, text, keyboard = null) {
 }
 
 // =========================
-// START COMMAND
+// START HANDLER
 // =========================
 
 async function handleStart(chatId) {
   await sendMessage(
     chatId,
-    'سلام 👋\nربات تست بله با موفقیت اجرا شد.',
+    'سلام 👋\nربات بله با موفقیت اجرا شد 🚀',
     [
       [
         {
@@ -61,7 +71,7 @@ async function handleStart(chatId) {
 }
 
 // =========================
-// CALLBACK HANDLER
+// CALLBACK
 // =========================
 
 async function handleCallback(callback) {
@@ -69,28 +79,19 @@ async function handleCallback(callback) {
   const data = callback.data;
 
   if (data === 'test_button') {
-    await sendMessage(chatId, '✅ دکمه با موفقیت کار کرد!');
+    await sendMessage(chatId, '✅ دکمه کار کرد!');
   }
 }
 
 // =========================
-// WEBHOOK
+// WEBHOOK ENDPOINT
 // =========================
 
-app.post('/webhook', async (req, res) => {
-
+app.post(WEBHOOK_PATH, async (req, res) => {
   const update = req.body;
 
-  console.log(JSON.stringify(update, null, 2));
-
   try {
-
-    // =====================
-    // MESSAGE
-    // =====================
-
     if (update.message) {
-
       const chatId = update.message.chat.id;
       const text = update.message.text;
 
@@ -100,10 +101,6 @@ app.post('/webhook', async (req, res) => {
         await sendMessage(chatId, `📩 پیام شما:\n${text}`);
       }
     }
-
-    // =====================
-    // CALLBACK QUERY
-    // =====================
 
     if (update.callback_query) {
       await handleCallback(update.callback_query);
@@ -117,17 +114,42 @@ app.post('/webhook', async (req, res) => {
 });
 
 // =========================
-// ROOT
+// HEALTH CHECK
 // =========================
 
 app.get('/', (req, res) => {
-  res.send('Bale Bot Running ✅');
+  res.send('🤖 Bale Bot Running OK');
 });
+
+// =========================
+// SET WEBHOOK AUTOMATIC
+// =========================
+
+async function setWebhook() {
+  try {
+    const url = `${BASE_URL}${WEBHOOK_PATH}`;
+
+    const res = await axios.post(`${API}/setWebhook`, {
+      url
+    });
+
+    console.log('✅ Webhook set:', res.data);
+
+  } catch (err) {
+    console.log('❌ Webhook error:', err.response?.data || err.message);
+  }
+}
 
 // =========================
 // START SERVER
 // =========================
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(PORT, async () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+
+  if (!BASE_URL) {
+    console.log('⚠️ BASE_URL is not set!');
+  } else {
+    await setWebhook();
+  }
 });
