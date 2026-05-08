@@ -46,6 +46,7 @@ function loss(id) {
 // ================= GAME =================
 
 const games = {};
+const clickLock = {};
 
 const LEVELS = {
   easy: { size: 4, mines: 2, reward: 10, name: '🍃 آسان' },
@@ -55,40 +56,41 @@ const LEVELS = {
 
 // ================= BOARD =================
 
-function createBoard(size, mines, safeIndex) {
+function createBoard(size, mines, safe) {
   const total = size * size;
   const board = Array(total).fill(0);
 
-  const safe = new Set([safeIndex]);
+  const safeSet = new Set([safe]);
 
-  const sx = Math.floor(safeIndex / size);
-  const sy = safeIndex % size;
+  const sx = Math.floor(safe / size);
+  const sy = safe % size;
 
-  for (let dx = -1; dx <= 1; dx++) {
-    for (let dy = -1; dy <= 1; dy++) {
-      const x = sx + dx;
-      const y = sy + dy;
-      if (x >= 0 && y >= 0 && x < size && y < size) {
-        safe.add(x * size + y);
+  for (let x = -1; x <= 1; x++) {
+    for (let y = -1; y <= 1; y++) {
+      const nx = sx + x;
+      const ny = sy + y;
+
+      if (nx >= 0 && ny >= 0 && nx < size && ny < size) {
+        safeSet.add(nx * size + ny);
       }
     }
   }
 
-  let positions = [];
+  let arr = [];
   for (let i = 0; i < total; i++) {
-    if (!safe.has(i)) positions.push(i);
+    if (!safeSet.has(i)) arr.push(i);
   }
 
   for (let i = 0; i < mines; i++) {
-    const r = Math.floor(Math.random() * positions.length);
-    board[positions[r]] = '💣';
-    positions.splice(r, 1);
+    const r = Math.floor(Math.random() * arr.length);
+    board[arr[r]] = '💣';
+    arr.splice(r, 1);
   }
 
   for (let i = 0; i < total; i++) {
     if (board[i] === '💣') continue;
 
-    let count = 0;
+    let c = 0;
     const x = Math.floor(i / size);
     const y = i % size;
 
@@ -101,15 +103,44 @@ function createBoard(size, mines, safeIndex) {
           nx >= 0 && ny >= 0 &&
           nx < size && ny < size
         ) {
-          if (board[nx * size + ny] === '💣') count++;
+          if (board[nx * size + ny] === '💣') c++;
         }
       }
     }
 
-    board[i] = count;
+    board[i] = c;
   }
 
   return board;
+}
+
+// ================= FLOOD =================
+
+function flood(game, idx) {
+  const size = game.size;
+
+  if (game.revealed[idx] || game.flags[idx]) return;
+
+  game.revealed[idx] = true;
+
+  if (game.board[idx] !== 0) return;
+
+  const x = Math.floor(idx / size);
+  const y = idx % size;
+
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const nx = x + dx;
+      const ny = y + dy;
+
+      if (
+        nx >= 0 && ny >= 0 &&
+        nx < size && ny < size
+      ) {
+        flood(game, nx * size + ny);
+      }
+    }
+  }
 }
 
 // ================= UI =================
@@ -125,7 +156,9 @@ function render(game) {
 
       let t = '◻️';
 
-      if (game.revealed[idx]) {
+      if (game.flags[idx]) t = '🚩';
+
+      else if (game.revealed[idx]) {
         if (game.board[idx] === '💣') t = '💣';
         else if (game.board[idx] === 0) t = '▫️';
         else t = `${game.board[idx]}️⃣`;
@@ -147,49 +180,6 @@ function render(game) {
   return { inline_keyboard: rows };
 }
 
-function menu() {
-  return {
-    inline_keyboard: [
-      [{ text: '🎮 بازی جدید', callback_data: 'new' }],
-      [
-        { text: '💰 کیف پول', callback_data: 'wallet' },
-        { text: '📊 آمار', callback_data: 'stats' }
-      ]
-    ]
-  };
-}
-
-function levels() {
-  return {
-    inline_keyboard: [
-      [{ text: '🍃 آسان', callback_data: 'l_easy' }],
-      [{ text: '⚙️ معمولی', callback_data: 'l_normal' }],
-      [{ text: '🔥 سخت', callback_data: 'l_hard' }]
-    ]
-  };
-}
-
-// ================= SEND =================
-
-async function send(chat, text, kb = null) {
-  await axios.post(`${API}/sendMessage`, {
-    chat_id: chat,
-    text,
-    reply_markup: kb
-  });
-}
-
-async function edit(chat, msg, text, kb = null) {
-  try {
-    await axios.post(`${API}/editMessageText`, {
-      chat_id: chat,
-      message_id: msg,
-      text,
-      reply_markup: kb
-    });
-  } catch {}
-}
-
 // ================= WEBHOOK =================
 
 app.post('/webhook', async (req, res) => {
@@ -204,17 +194,21 @@ app.post('/webhook', async (req, res) => {
     if (u.message?.text === '/start') {
       const user = getUser(u.message.from.id);
 
-      return send(u.message.chat.id,
-        `🎮 Minesweeper
+      return axios.post(`${API}/sendMessage`, {
+        chat_id: u.message.chat.id,
+        text: `🎮 Minesweeper PRO
 
 💰 ${user.coins}
 🏆 ${user.wins}
 💀 ${user.losses}`,
-        menu()
-      );
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🎮 بازی جدید', callback_data: 'new' }]
+          ]
+        }
+      });
     }
 
-    // CALLBACK
     if (!u.callback_query) return;
 
     const cb = u.callback_query;
@@ -224,85 +218,83 @@ app.post('/webhook', async (req, res) => {
     const msg = cb.message.message_id;
     const uid = cb.from.id;
 
+    if (clickLock[uid]) return;
+    clickLock[uid] = true;
+    setTimeout(() => delete clickLock[uid], 200);
+
     // NEW GAME
     if (data === 'new') {
-      return edit(chat, msg, '🎯 انتخاب سطح:', levels());
-    }
-
-    // LEVEL
-    if (data.startsWith('l_')) {
-      const lvl = data.split('_')[1];
-      const cfg = LEVELS[lvl];
 
       games[uid] = {
-        ...cfg,
-        revealed: Array(cfg.size * cfg.size).fill(false),
+        size: 4,
+        mines: 2,
+        reward: 10,
         board: null,
+        revealed: Array(16).fill(false),
+        flags: Array(16).fill(false),
         first: true
       };
 
-      return edit(chat, msg,
-        `🎮 ${cfg.name}
-
-روی یک خانه کلیک کن 👇`,
-        render({
-          size: cfg.size,
-          revealed: games[uid].revealed,
-          board: Array(cfg.size * cfg.size).fill(0)
-        })
-      );
+      return axios.post(`${API}/editMessageText`, {
+        chat_id: chat,
+        message_id: msg,
+        text: '🎮 شروع بازی',
+        reply_markup: render(games[uid])
+      });
     }
 
     // CLICK
     if (data.startsWith('c_')) {
+
       const idx = +data.split('_')[1];
       const g = games[uid];
 
       if (!g) return;
 
+      // first click
       if (g.first) {
         g.board = createBoard(g.size, g.mines, idx);
         g.first = false;
       }
 
+      // mine
       if (g.board[idx] === '💣') {
+
         g.revealed.fill(true);
+
         loss(uid);
 
-        return edit(chat, msg, '💥 باختی!', render(g));
+        return axios.post(`${API}/editMessageText`, {
+          chat_id: chat,
+          message_id: msg,
+          text: '💥 باختی!',
+          reply_markup: render(g)
+        });
       }
 
-      g.revealed[idx] = true;
+      // reveal
+      flood(g, idx);
 
-      // check win
+      // win
       let open = g.revealed.filter(x => x).length;
       if (open === g.size * g.size - g.mines) {
+
         win(uid, g.reward);
 
-        return edit(chat, msg,
-          `🎉 بردی! +${g.reward} سکه`,
-          render(g)
-        );
+        return axios.post(`${API}/editMessageText`, {
+          chat_id: chat,
+          message_id: msg,
+          text: `🎉 بردی +${g.reward}`,
+          reply_markup: render(g)
+        });
       }
 
-      return edit(chat, msg, '🎮 ادامه...', render(g));
-    }
-
-    // WALLET
-    if (data === 'wallet') {
-      const u2 = getUser(uid);
-      return edit(chat, msg, `💰 ${u2.coins}`, menu());
-    }
-
-    // STATS
-    if (data === 'stats') {
-      const u2 = getUser(uid);
-      return edit(chat, msg,
-        `📊
-🏆 ${u2.wins}
-💀 ${u2.losses}`,
-        menu()
-      );
+      return axios.post(`${API}/editMessageText`, {
+        chat_id: chat,
+        message_id: msg,
+        text: '🎮 ادامه...',
+        reply_markup: render(g)
+      });
     }
 
   } catch (e) {
@@ -314,18 +306,6 @@ app.post('/webhook', async (req, res) => {
 
 app.get('/', (req, res) => res.send('OK'));
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log('🚀 Running');
-
-  try {
-    await axios.get(`${API}/setWebhook`, {
-      params: {
-        url: `${process.env.WEBHOOK_URL}/webhook`
-      }
-    });
-
-    console.log('✅ Webhook Ready');
-  } catch (e) {
-    console.log('Webhook error:', e.message);
-  }
 });
