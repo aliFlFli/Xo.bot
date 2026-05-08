@@ -3,6 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const axios = require('axios');
 const fs = require('fs');
+const Database = require('better-sqlite3');
 
 const app = express();
 
@@ -14,41 +15,108 @@ const TOKEN = process.env.BOT_TOKEN;
 const API_URL = `https://tapi.bale.ai/bot${TOKEN}`;
 const PORT = process.env.PORT || 3000;
 
+// ================= DATABASE =================
+
+const db = new Database('game.db');
+
+// USERS
+
+db.prepare(`
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY,
+  coins INTEGER DEFAULT 100,
+  wins INTEGER DEFAULT 0,
+  losses INTEGER DEFAULT 0
+)
+`).run();
+
+// OFFSET
+
+db.prepare(`
+CREATE TABLE IF NOT EXISTS bot (
+  key TEXT PRIMARY KEY,
+  value TEXT
+)
+`).run();
+
 // ================= OFFSET =================
 
-const OFFSET_FILE = './offset.json';
+function getOffset() {
 
-function loadOffset() {
-  try {
-    return JSON.parse(
-      fs.readFileSync(OFFSET_FILE, 'utf8')
-    ).offset || 0;
-  } catch {
-    return 0;
-  }
+  const row = db.prepare(`
+    SELECT value FROM bot
+    WHERE key = 'offset'
+  `).get();
+
+  return row ? Number(row.value) : 0;
 }
 
 function saveOffset(offset) {
-  try {
-    fs.writeFileSync(
-      OFFSET_FILE,
-      JSON.stringify({ offset })
-    );
-  } catch (e) {
-    console.log('Offset Save Error:', e.message);
-  }
+
+  db.prepare(`
+    INSERT OR REPLACE INTO bot
+    (key, value)
+    VALUES ('offset', ?)
+  `).run(String(offset));
 }
 
-let lastUpdateId = loadOffset();
+let lastUpdateId = getOffset();
+
+// ================= USERS =================
+
+function getUser(id) {
+
+  let user = db.prepare(`
+    SELECT * FROM users
+    WHERE id = ?
+  `).get(id);
+
+  if (!user) {
+
+    db.prepare(`
+      INSERT INTO users
+      (id)
+      VALUES (?)
+    `).run(id);
+
+    user = db.prepare(`
+      SELECT * FROM users
+      WHERE id = ?
+    `).get(id);
+  }
+
+  return user;
+}
+
+function addWin(id, reward) {
+
+  db.prepare(`
+    UPDATE users
+    SET
+      wins = wins + 1,
+      coins = coins + ?
+    WHERE id = ?
+  `).run(reward, id);
+}
+
+function addLoss(id) {
+
+  db.prepare(`
+    UPDATE users
+    SET losses = losses + 1
+    WHERE id = ?
+  `).run(id);
+}
 
 // ================= MEMORY =================
 
-const users = {};
 const games = {};
+const clickLocks = {};
 
 // ================= SETTINGS =================
 
 const BOARDS = {
+
   easy: {
     size: 4,
     mines: 2,
@@ -74,21 +142,7 @@ const BOARDS = {
 // ================= HELPERS =================
 
 function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function getUser(id) {
-
-  if (!users[id]) {
-
-    users[id] = {
-      coins: 100,
-      wins: 0,
-      losses: 0
-    };
-  }
-
-  return users[id];
+  return new Promise(r => setTimeout(r, ms));
 }
 
 // ================= GAME =================
@@ -165,6 +219,7 @@ function createBoard(size, mines, firstClick) {
           ny >= 0 &&
           ny < size
         ) {
+
           if (
             board[nx * size + ny] === '💣'
           ) {
@@ -216,6 +271,7 @@ function reveal(
           !revealed[ni] &&
           board[ni] !== '💣'
         ) {
+
           reveal(
             board,
             revealed,
@@ -230,16 +286,16 @@ function reveal(
 
 function checkWin(game) {
 
-  const total = game.size * game.size;
-
   let opened = 0;
 
   for (const r of game.revealed) {
-
     if (r) opened++;
   }
 
-  return opened === total - game.mines;
+  return (
+    opened ===
+    game.size * game.size - game.mines
+  );
 }
 
 // ================= UI =================
@@ -317,15 +373,14 @@ function renderGame(game) {
       if (game.revealed[idx]) {
 
         if (game.board[idx] === '💣') {
-
           emoji = '💣';
+        }
 
-        } else if (game.board[idx] === 0) {
-
+        else if (game.board[idx] === 0) {
           emoji = '⬜';
+        }
 
-        } else {
-
+        else {
           emoji = `${game.board[idx]}️⃣`;
         }
       }
@@ -406,9 +461,7 @@ async function editMessage(
     if (
       JSON.stringify(err)
         .includes('not modified')
-    ) {
-      return;
-    }
+    ) return;
 
     console.log('Edit Error:', err);
   }
@@ -432,7 +485,7 @@ async function answerCallback(id) {
 
 async function handleUpdate(update) {
 
-  // ================= START =================
+  // START
 
   if (
     update.message &&
@@ -442,7 +495,8 @@ async function handleUpdate(update) {
     const user =
       getUser(update.message.from.id);
 
-    await sendMessage(
+    return sendMessage(
+
       update.message.chat.id,
 
       `🎮 مین روب حرفه‌ای
@@ -453,11 +507,9 @@ async function handleUpdate(update) {
 
       mainMenu()
     );
-
-    return;
   }
 
-  // ================= CALLBACK =================
+  // CALLBACK
 
   if (!update.callback_query) return;
 
@@ -471,9 +523,21 @@ async function handleUpdate(update) {
 
   const data = cb.data;
 
+  // ================= ANTI SPAM =================
+
+  if (clickLocks[userId]) return;
+
+  clickLocks[userId] = true;
+
+  setTimeout(() => {
+    delete clickLocks[userId];
+  }, 350);
+
+  // =================
+
   await answerCallback(cb.id);
 
-  // ================= MENU =================
+  // MENU
 
   if (data === 'menu') {
 
@@ -482,6 +546,7 @@ async function handleUpdate(update) {
     const user = getUser(userId);
 
     return editMessage(
+
       chatId,
       msgId,
 
@@ -495,29 +560,30 @@ async function handleUpdate(update) {
     );
   }
 
-  // ================= NEW =================
+  // NEW
 
   if (data === 'new') {
 
     return editMessage(
       chatId,
       msgId,
-      '🎯 سطح بازی را انتخاب کن:',
+      '🎯 انتخاب سطح:',
       levelMenu()
     );
   }
 
-  // ================= WALLET =================
+  // WALLET
 
   if (data === 'wallet') {
 
     const user = getUser(userId);
 
     return editMessage(
+
       chatId,
       msgId,
 
-      `💰 موجودی شما:
+      `💰 موجودی:
 
 ${user.coins} سکه 🪙`,
 
@@ -525,27 +591,27 @@ ${user.coins} سکه 🪙`,
     );
   }
 
-  // ================= STATS =================
+  // STATS
 
   if (data === 'stats') {
 
     const user = getUser(userId);
 
     return editMessage(
+
       chatId,
       msgId,
 
       `📊 آمار شما
 
 🏆 برد: ${user.wins}
-💀 باخت: ${user.losses}
-💰 سکه: ${user.coins}`,
+💀 باخت: ${user.losses}`,
 
       mainMenu()
     );
   }
 
-  // ================= LEVEL =================
+  // LEVEL
 
   if (data.startsWith('lv_')) {
 
@@ -576,12 +642,13 @@ ${user.coins} سکه 🪙`,
     };
 
     return editMessage(
+
       chatId,
       msgId,
 
       `🎮 ${cfg.name}
 
-💰 جایزه: ${cfg.reward} سکه
+💰 جایزه: ${cfg.reward}
 
 روی خونه‌ها کلیک کن 👇`,
 
@@ -600,7 +667,7 @@ ${user.coins} سکه 🪙`,
     );
   }
 
-  // ================= OPEN =================
+  // OPEN
 
   if (data.startsWith('o_')) {
 
@@ -611,13 +678,9 @@ ${user.coins} سکه 🪙`,
 
     if (!game) return;
 
-    // جلوگیری از کلیک تکراری
+    if (game.revealed[idx]) return;
 
-    if (game.revealed[idx]) {
-      return;
-    }
-
-    // ساخت تخته
+    // CREATE BOARD
 
     if (game.waiting) {
 
@@ -630,7 +693,7 @@ ${user.coins} سکه 🪙`,
       game.waiting = false;
     }
 
-    // برخورد با مین
+    // MINE
 
     if (game.board[idx] === '💣') {
 
@@ -643,13 +706,15 @@ ${user.coins} سکه 🪙`,
         if (
           game.board[i] === '💣'
         ) {
+
           game.revealed[i] = true;
         }
       }
 
-      getUser(userId).losses++;
+      addLoss(userId);
 
       await editMessage(
+
         chatId,
         msgId,
 
@@ -663,7 +728,7 @@ ${user.coins} سکه 🪙`,
       return;
     }
 
-    // باز کردن
+    // REVEAL
 
     reveal(
       game.board,
@@ -672,17 +737,17 @@ ${user.coins} سکه 🪙`,
       idx
     );
 
-    // برد
+    // WIN
 
     if (checkWin(game)) {
 
-      const user = getUser(userId);
-
-      user.wins++;
-
-      user.coins += game.reward;
+      addWin(
+        userId,
+        game.reward
+      );
 
       await editMessage(
+
         chatId,
         msgId,
 
@@ -698,13 +763,14 @@ ${user.coins} سکه 🪙`,
       return;
     }
 
-    // آپدیت صفحه
+    // UPDATE
 
     return editMessage(
+
       chatId,
       msgId,
 
-      `🎮 بازی در حال اجرا...`,
+      '🎮 بازی در حال اجرا...',
 
       renderGame(game)
     );
@@ -745,9 +811,7 @@ async function poll() {
       if (
         update.update_id <=
         lastUpdateId
-      ) {
-        continue;
-      }
+      ) continue;
 
       lastUpdateId =
         update.update_id;
@@ -782,18 +846,12 @@ setInterval(() => {
 
   for (const userId in games) {
 
-    const game = games[userId];
-
     if (
-      now - game.createdAt >
+      now - games[userId].createdAt >
       30 * 60 * 1000
     ) {
 
       delete games[userId];
-
-      console.log(
-        `🧹 Game Removed: ${userId}`
-      );
     }
   }
 
@@ -808,7 +866,7 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
 
   console.log(
-    `🚀 Server Running On ${PORT}`
+    `🚀 Server Running ${PORT}`
   );
 });
 
