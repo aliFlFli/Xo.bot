@@ -1,10 +1,8 @@
-import { Bale } from 'bale-telegram';
-import express from 'express';
-import Database from 'better-sqlite3';
-import crypto from 'crypto';
-import dotenv from 'dotenv';
-
-dotenv.config();
+const { Bale } = require('bale-telegram');
+const express = require('express');
+const Database = require('better-sqlite3');
+const crypto = require('crypto');
+require('dotenv').config();
 
 // ================== CONFIG ==================
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -272,334 +270,343 @@ function getMainMenu() {
 
 // ================== BOT HANDLERS ==================
 bot.on('message', async (msg) => {
-  const userId = msg.from.id;
-  const user = getUser(userId);
-  
-  if (msg.text === '/start') {
-    await bot.sendMessage(
-      msg.chat.id,
-      `🎯 به ماین‌سوییپر خوش اومدی!\n\n👤 ${user.userId}\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins} | ${user.losses} باخت\n⭐ سطح: ${user.level}`,
-      getMainMenu()
-    );
+  try {
+    const userId = msg.from.id;
+    const user = getUser(userId);
+    
+    if (msg.text === '/start') {
+      await bot.sendMessage(
+        msg.chat.id,
+        `🎯 به ماین‌سوییپر خوش اومدی!\n\n👤 ${user.userId}\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins} | ${user.losses} باخت\n⭐ سطح: ${user.level}`,
+        getMainMenu()
+      );
+    }
+  } catch (err) {
+    console.error('Error in message handler:', err);
   }
 });
 
 bot.on('callback_query', async (callbackQuery) => {
-  const data = callbackQuery.data;
-  const message = callbackQuery.message;
-  const userId = callbackQuery.from.id;
-  const chatId = message.chat.id;
-  
-  await bot.answerCallbackQuery(callbackQuery.id);
-  
-  // Main menu
-  if (data === 'main_menu') {
-    const user = getUser(userId);
-    await bot.editMessageText(
-      chatId,
-      message.message_id,
-      `🎯 منوی اصلی\n\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins}\n⭐ سطح: ${user.level}`,
-      getMainMenu()
-    );
-    return;
-  }
-  
-  // New game - choose difficulty
-  if (data === 'new_game') {
-    const keyboard = {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🍃 آسان (10 سکه)', callback_data: 'diff_easy' }],
-          [{ text: '⚙️ معمولی (25 سکه)', callback_data: 'diff_normal' }],
-          [{ text: '🔥 سخت (50 سکه)', callback_data: 'diff_hard' }],
-          [{ text: '💀 حرفه‌ای (100 سکه)', callback_data: 'diff_expert' }],
-          [{ text: '🔙 برگشت', callback_data: 'main_menu' }]
-        ]
-      }
-    };
-    await bot.editMessageText(chatId, message.message_id, '🎲 سطح سختی رو انتخاب کن:', keyboard);
-    return;
-  }
-  
-  // Start game with difficulty
-  if (data.startsWith('diff_')) {
-    const level = data.split('_')[1];
-    const config = DIFFICULTY[level];
+  try {
+    const data = callbackQuery.data;
+    const message = callbackQuery.message;
+    const userId = callbackQuery.from.id;
+    const chatId = message.chat.id;
     
-    if (games.size >= MAX_ACTIVE_GAMES) {
-      await bot.answerCallbackQuery(callbackQuery.id, '❌ شلوغه! کمی صبر کن', true);
+    await bot.answerCallbackQuery(callbackQuery.id);
+    
+    // Main menu
+    if (data === 'main_menu') {
+      const user = getUser(userId);
+      await bot.editMessageText(
+        chatId,
+        message.message_id,
+        `🎯 منوی اصلی\n\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins}\n⭐ سطح: ${user.level}`,
+        getMainMenu()
+      );
       return;
     }
     
-    const gameId = generateGameId(chatId, userId);
-    const game = new MinesweeperGame(config.size, config.mines, level, userId, gameId, chatId);
-    const gameKey = `${chatId}_${userId}`;
-    games.set(gameKey, game);
-    
-    await bot.editMessageText(
-      chatId,
-      message.message_id,
-      `🎮 بازی ${config.name}\n💰 جایزه: ${config.coin} سکه\n${game.getStats()}`,
-      renderGame(game, false)
-    );
-    return;
-  }
-  
-  // Handle cell click
-  if (data.startsWith('cell_')) {
-    const parts = data.split('_');
-    const gameId = parts[1] + '_' + parts[2];
-    const idx = parseInt(parts[3]);
-    const gameKey = `${chatId}_${userId}`;
-    const game = games.get(gameKey);
-    
-    if (!game || game.gameId !== gameId) {
-      await bot.answerCallbackQuery(callbackQuery.id, '❌ بازی معتبر نیست!', true);
+    // New game - choose difficulty
+    if (data === 'new_game') {
+      const keyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🍃 آسان (10 سکه)', callback_data: 'diff_easy' }],
+            [{ text: '⚙️ معمولی (25 سکه)', callback_data: 'diff_normal' }],
+            [{ text: '🔥 سخت (50 سکه)', callback_data: 'diff_hard' }],
+            [{ text: '💀 حرفه‌ای (100 سکه)', callback_data: 'diff_expert' }],
+            [{ text: '🔙 برگشت', callback_data: 'main_menu' }]
+          ]
+        }
+      };
+      await bot.editMessageText(chatId, message.message_id, '🎲 سطح سختی رو انتخاب کن:', keyboard);
       return;
     }
     
-    if (!game.alive) {
-      await bot.answerCallbackQuery(callbackQuery.id, '❌ بازی تموم شده!', true);
-      return;
-    }
-    
-    if (game.userId !== userId) {
-      await bot.answerCallbackQuery(callbackQuery.id, '❌ این بازی مال تو نیست!', true);
-      return;
-    }
-    
-    // Check flag mode
-    const isFlag = flagMode.get(gameKey) || false;
-    if (isFlag) {
-      if (game.revealed[idx]) {
-        await bot.answerCallbackQuery(callbackQuery.id, '❌ باز شده رو پرچم نمیشه زد', true);
+    // Start game with difficulty
+    if (data.startsWith('diff_')) {
+      const level = data.split('_')[1];
+      const config = DIFFICULTY[level];
+      
+      if (games.size >= MAX_ACTIVE_GAMES) {
+        await bot.answerCallbackQuery(callbackQuery.id, '❌ شلوغه! کمی صبر کن', true);
         return;
       }
-      game.flags[idx] = !game.flags[idx];
+      
+      const gameId = generateGameId(chatId, userId);
+      const game = new MinesweeperGame(config.size, config.mines, level, userId, gameId, chatId);
+      const gameKey = `${chatId}_${userId}`;
+      games.set(gameKey, game);
+      
+      await bot.editMessageText(
+        chatId,
+        message.message_id,
+        `🎮 بازی ${config.name}\n💰 جایزه: ${config.coin} سکه\n${game.getStats()}`,
+        renderGame(game, false)
+      );
+      return;
+    }
+    
+    // Handle cell click
+    if (data.startsWith('cell_')) {
+      const parts = data.split('_');
+      const gameId = parts[1] + '_' + parts[2];
+      const idx = parseInt(parts[3]);
+      const gameKey = `${chatId}_${userId}`;
+      const game = games.get(gameKey);
+      
+      if (!game || game.gameId !== gameId) {
+        await bot.answerCallbackQuery(callbackQuery.id, '❌ بازی معتبر نیست!', true);
+        return;
+      }
+      
+      if (!game.alive) {
+        await bot.answerCallbackQuery(callbackQuery.id, '❌ بازی تموم شده!', true);
+        return;
+      }
+      
+      if (game.userId !== userId) {
+        await bot.answerCallbackQuery(callbackQuery.id, '❌ این بازی مال تو نیست!', true);
+        return;
+      }
+      
+      // Check flag mode
+      const isFlag = flagMode.get(gameKey) || false;
+      if (isFlag) {
+        if (game.revealed[idx]) {
+          await bot.answerCallbackQuery(callbackQuery.id, '❌ باز شده رو پرچم نمیشه زد', true);
+          return;
+        }
+        game.flags[idx] = !game.flags[idx];
+        await bot.editMessageText(
+          chatId,
+          message.message_id,
+          `💣 ${DIFFICULTY[game.difficulty].name}\n${game.getStats()}`,
+          renderGame(game, false)
+        );
+        await bot.answerCallbackQuery(callbackQuery.id, game.flags[idx] ? '🚩 پرچم زده شد' : '🔓 پرچم برداشته شد');
+        return;
+      }
+      
+      // Normal click
+      if (game.revealed[idx]) {
+        await bot.answerCallbackQuery(callbackQuery.id, '🔓 قبلا باز شده', true);
+        return;
+      }
+      if (game.flags[idx]) {
+        await bot.answerCallbackQuery(callbackQuery.id, '🚩 پرچم داره', true);
+        return;
+      }
+      
+      if (!game.minesPlaced) {
+        game.placeMinesAfterFirstClick(idx);
+      }
+      
+      game.moves++;
+      
+      if (game.board[idx] === '💣') {
+        game.alive = false;
+        game.revealAllMines();
+        const user = getUser(userId);
+        user.losses++;
+        user.gamesPlayed++;
+        updateUser(user);
+        await bot.editMessageText(
+          chatId,
+          message.message_id,
+          `💥 باختی! 💀\n\n${game.getStats()}`,
+          renderGame(game, true)
+        );
+        await bot.answerCallbackQuery(callbackQuery.id, '💀 روی مین رفتی!', true);
+        return;
+      }
+      
+      game.revealEmpty(idx);
+      
+      if (game.checkWin()) {
+        game.alive = false;
+        const gameTime = game.getTimeInSeconds();
+        let coinReward = DIFFICULTY[game.difficulty].coin;
+        
+        const user = getUser(userId);
+        user.coins += coinReward;
+        user.wins++;
+        user.gamesPlayed++;
+        user.xp += 20;
+        
+        const levelNames = ['', '🌱 تازه‌کار', '⭐ مبتدی', '🔰 آشنای حرفه', '🎯 ماهر', '🔥 حرفه‌ای', '💎 استاد', '👑 افسانه‌ای'];
+        let levelUpMsg = '';
+        if (user.xp >= user.level * 100) {
+          user.level++;
+          levelUpMsg = `\n🎉 **سطح ${user.level}** رسیدی! ${levelNames[user.level] || 'قهرمان'}\n💰 +50 سکه پاداش!\n`;
+          user.coins += 50;
+        }
+        
+        updateUser(user);
+        
+        await bot.editMessageText(
+          chatId,
+          message.message_id,
+          `🎉 **بردی!** 🎉\n\n` +
+          `⏱️ زمان: ${gameTime} ثانیه\n` +
+          `💰 +${coinReward} سکه\n` +
+          `✨ +20 XP${levelUpMsg}\n\n` +
+          `📊 سکه: ${user.coins} | سطح: ${user.level}`,
+          renderGame(game, true)
+        );
+        await bot.answerCallbackQuery(callbackQuery.id, '🏆 پیروزی!', true);
+        return;
+      }
+      
       await bot.editMessageText(
         chatId,
         message.message_id,
         `💣 ${DIFFICULTY[game.difficulty].name}\n${game.getStats()}`,
         renderGame(game, false)
       );
-      await bot.answerCallbackQuery(callbackQuery.id, game.flags[idx] ? '🚩 پرچم زده شد' : '🔓 پرچم برداشته شد');
+      await bot.answerCallbackQuery(callbackQuery.id, '✅ باز شد');
       return;
     }
     
-    // Normal click
-    if (game.revealed[idx]) {
-      await bot.answerCallbackQuery(callbackQuery.id, '🔓 قبلا باز شده', true);
+    // Flag mode toggle
+    if (data.startsWith('flag_')) {
+      const gameKey = `${chatId}_${userId}`;
+      const current = flagMode.get(gameKey) || false;
+      flagMode.set(gameKey, !current);
+      await bot.answerCallbackQuery(callbackQuery.id, `${!current ? '🚩 حالت پرچم' : '🔍 حالت کلیک'} فعال شد`);
       return;
     }
-    if (game.flags[idx]) {
-      await bot.answerCallbackQuery(callbackQuery.id, '🚩 پرچم داره', true);
+    
+    // Shop
+    if (data === 'shop') {
+      const keyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '💣 مین‌شکن (50 سکه)', callback_data: 'buy_bomb_disabler' }],
+            [{ text: '❤️ جان اضافه (75 سکه)', callback_data: 'buy_extra_life' }],
+            [{ text: '🔦 مین‌یاب (120 سکه)', callback_data: 'buy_mine_detector' }],
+            [{ text: '🧠 حسگر هوشمند (90 سکه)', callback_data: 'buy_smart_hint' }],
+            [{ text: '🔙 برگشت', callback_data: 'main_menu' }]
+          ]
+        }
+      };
+      await bot.editMessageText(chatId, message.message_id, '🛒 فروشگاه آیتم‌ها:', keyboard);
       return;
     }
     
-    if (!game.minesPlaced) {
-      game.placeMinesAfterFirstClick(idx);
-    }
-    
-    game.moves++;
-    
-    if (game.board[idx] === '💣') {
-      game.alive = false;
-      game.revealAllMines();
+    // Buy items
+    if (data.startsWith('buy_')) {
+      const item = data.split('_')[1];
+      const prices = { bomb_disabler: 50, extra_life: 75, mine_detector: 120, smart_hint: 90 };
+      const price = prices[item];
       const user = getUser(userId);
-      user.losses++;
-      user.gamesPlayed++;
-      updateUser(user);
+      
+      if (user.coins >= price) {
+        user.coins -= price;
+        user.inventory[item] = (user.inventory[item] || 0) + 1;
+        updateUser(user);
+        await bot.answerCallbackQuery(callbackQuery.id, '✅ خرید موفق!', true);
+      } else {
+        await bot.answerCallbackQuery(callbackQuery.id, '❌ سکه کافی نیست!', true);
+      }
+      
+      const userUpdated = getUser(userId);
       await bot.editMessageText(
         chatId,
         message.message_id,
-        `💥 باختی! 💀\n\n${game.getStats()}`,
-        renderGame(game, true)
+        `💰 سکه باقی‌مونده: ${userUpdated.coins}`,
+        getMainMenu()
       );
-      await bot.answerCallbackQuery(callbackQuery.id, '💀 روی مین رفتی!', true);
       return;
     }
     
-    game.revealEmpty(idx);
-    
-    if (game.checkWin()) {
-      game.alive = false;
-      const gameTime = game.getTimeInSeconds();
-      let coinReward = DIFFICULTY[game.difficulty].coin;
-      
+    // Stats
+    if (data === 'stats') {
       const user = getUser(userId);
-      user.coins += coinReward;
-      user.wins++;
-      user.gamesPlayed++;
-      user.xp += 20;
-      
+      const winRate = user.gamesPlayed > 0 ? ((user.wins / user.gamesPlayed) * 100).toFixed(1) : 0;
+      await bot.editMessageText(
+        chatId,
+        message.message_id,
+        `📊 **آمار شما**\n\n` +
+        `🎮 بازی‌ها: ${user.gamesPlayed}\n` +
+        `🏆 برد: ${user.wins}\n` +
+        `💀 باخت: ${user.losses}\n` +
+        `💰 سکه: ${user.coins}\n` +
+        `⭐ سطح: ${user.level}\n` +
+        `✨ XP: ${user.xp}\n` +
+        `📈 نرخ برد: ${winRate}%`,
+        { reply_markup: { inline_keyboard: [[{ text: '🔙 برگشت', callback_data: 'main_menu' }]] } }
+      );
+      return;
+    }
+    
+    // Wallet
+    if (data === 'wallet') {
+      const user = getUser(userId);
+      await bot.editMessageText(
+        chatId,
+        message.message_id,
+        `💰 کیف پول شما: ${user.coins} سکه`,
+        { reply_markup: { inline_keyboard: [[{ text: '🔙 برگشت', callback_data: 'main_menu' }]] } }
+      );
+      return;
+    }
+    
+    // Level info
+    if (data === 'level_info') {
+      const user = getUser(userId);
       const levelNames = ['', '🌱 تازه‌کار', '⭐ مبتدی', '🔰 آشنای حرفه', '🎯 ماهر', '🔥 حرفه‌ای', '💎 استاد', '👑 افسانه‌ای'];
-      let levelUpMsg = '';
-      if (user.xp >= user.level * 100) {
-        user.level++;
-        levelUpMsg = `\n🎉 **سطح ${user.level}** رسیدی! ${levelNames[user.level] || 'قهرمان'}\n💰 +50 سکه پاداش!\n`;
-        user.coins += 50;
-      }
-      
-      updateUser(user);
-      
       await bot.editMessageText(
         chatId,
         message.message_id,
-        `🎉 **بردی!** 🎉\n\n` +
-        `⏱️ زمان: ${gameTime} ثانیه\n` +
-        `💰 +${coinReward} سکه\n` +
-        `✨ +20 XP${levelUpMsg}\n\n` +
-        `📊 سکه: ${user.coins} | سطح: ${user.level}`,
-        renderGame(game, true)
+        `⭐ **سطح ${user.level}** | ${levelNames[user.level] || 'قهرمان'}\n\n` +
+        `✨ XP فعلی: ${user.xp}\n` +
+        `📈 XP تا سطح بعد: ${user.level * 100 - user.xp}`,
+        { reply_markup: { inline_keyboard: [[{ text: '🔙 برگشت', callback_data: 'main_menu' }]] } }
       );
-      await bot.answerCallbackQuery(callbackQuery.id, '🏆 پیروزی!', true);
       return;
     }
     
-    await bot.editMessageText(
-      chatId,
-      message.message_id,
-      `💣 ${DIFFICULTY[game.difficulty].name}\n${game.getStats()}`,
-      renderGame(game, false)
-    );
-    await bot.answerCallbackQuery(callbackQuery.id, '✅ باز شد');
-    return;
-  }
-  
-  // Flag mode toggle
-  if (data.startsWith('flag_')) {
-    const gameKey = `${chatId}_${userId}`;
-    const current = flagMode.get(gameKey) || false;
-    flagMode.set(gameKey, !current);
-    await bot.answerCallbackQuery(callbackQuery.id, `${!current ? '🚩 حالت پرچم' : '🔍 حالت کلیک'} فعال شد`);
-    return;
-  }
-  
-  // Shop
-  if (data === 'shop') {
-    const keyboard = {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '💣 مین‌شکن (50 سکه)', callback_data: 'buy_bomb_disabler' }],
-          [{ text: '❤️ جان اضافه (75 سکه)', callback_data: 'buy_extra_life' }],
-          [{ text: '🔦 مین‌یاب (120 سکه)', callback_data: 'buy_mine_detector' }],
-          [{ text: '🧠 حسگر هوشمند (90 سکه)', callback_data: 'buy_smart_hint' }],
-          [{ text: '🔙 برگشت', callback_data: 'main_menu' }]
-        ]
-      }
-    };
-    await bot.editMessageText(chatId, message.message_id, '🛒 فروشگاه آیتم‌ها:', keyboard);
-    return;
-  }
-  
-  // Buy items
-  if (data.startsWith('buy_')) {
-    const item = data.split('_')[1];
-    const prices = { bomb_disabler: 50, extra_life: 75, mine_detector: 120, smart_hint: 90 };
-    const price = prices[item];
-    const user = getUser(userId);
-    
-    if (user.coins >= price) {
-      user.coins -= price;
-      user.inventory[item] = (user.inventory[item] || 0) + 1;
-      updateUser(user);
-      await bot.answerCallbackQuery(callbackQuery.id, '✅ خرید موفق!', true);
-    } else {
-      await bot.answerCallbackQuery(callbackQuery.id, '❌ سکه کافی نیست!', true);
+    // Theme menu
+    if (data === 'theme') {
+      const keyboard = {
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🎨 کلاسیک (رایگان)', callback_data: 'theme_default' }],
+            [{ text: '🎨 طبیعت (100 سکه)', callback_data: 'theme_nature' }],
+            [{ text: '🎨 نئون (200 سکه)', callback_data: 'theme_neon' }],
+            [{ text: '🔙 برگشت', callback_data: 'main_menu' }]
+          ]
+        }
+      };
+      await bot.editMessageText(chatId, message.message_id, '🎨 انتخاب تم:', keyboard);
+      return;
     }
     
-    const userUpdated = getUser(userId);
-    await bot.editMessageText(
-      chatId,
-      message.message_id,
-      `💰 سکه باقی‌مونده: ${userUpdated.coins}`,
-      getMainMenu()
-    );
-    return;
-  }
-  
-  // Stats
-  if (data === 'stats') {
-    const user = getUser(userId);
-    const winRate = user.gamesPlayed > 0 ? ((user.wins / user.gamesPlayed) * 100).toFixed(1) : 0;
-    await bot.editMessageText(
-      chatId,
-      message.message_id,
-      `📊 **آمار شما**\n\n` +
-      `🎮 بازی‌ها: ${user.gamesPlayed}\n` +
-      `🏆 برد: ${user.wins}\n` +
-      `💀 باخت: ${user.losses}\n` +
-      `💰 سکه: ${user.coins}\n` +
-      `⭐ سطح: ${user.level}\n` +
-      `✨ XP: ${user.xp}\n` +
-      `📈 نرخ برد: ${winRate}%`,
-      { reply_markup: { inline_keyboard: [[{ text: '🔙 برگشت', callback_data: 'main_menu' }]] } }
-    );
-    return;
-  }
-  
-  // Wallet
-  if (data === 'wallet') {
-    const user = getUser(userId);
-    await bot.editMessageText(
-      chatId,
-      message.message_id,
-      `💰 کیف پول شما: ${user.coins} سکه`,
-      { reply_markup: { inline_keyboard: [[{ text: '🔙 برگشت', callback_data: 'main_menu' }]] } }
-    );
-    return;
-  }
-  
-  // Level info
-  if (data === 'level_info') {
-    const user = getUser(userId);
-    const levelNames = ['', '🌱 تازه‌کار', '⭐ مبتدی', '🔰 آشنای حرفه', '🎯 ماهر', '🔥 حرفه‌ای', '💎 استاد', '👑 افسانه‌ای'];
-    await bot.editMessageText(
-      chatId,
-      message.message_id,
-      `⭐ **سطح ${user.level}** | ${levelNames[user.level] || 'قهرمان'}\n\n` +
-      `✨ XP فعلی: ${user.xp}\n` +
-      `📈 XP تا سطح بعد: ${user.level * 100 - user.xp}`,
-      { reply_markup: { inline_keyboard: [[{ text: '🔙 برگشت', callback_data: 'main_menu' }]] } }
-    );
-    return;
-  }
-  
-  // Theme menu
-  if (data === 'theme') {
-    const keyboard = {
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: '🎨 کلاسیک (رایگان)', callback_data: 'theme_default' }],
-          [{ text: '🎨 طبیعت (100 سکه)', callback_data: 'theme_nature' }],
-          [{ text: '🎨 نئون (200 سکه)', callback_data: 'theme_neon' }],
-          [{ text: '🔙 برگشت', callback_data: 'main_menu' }]
-        ]
+    // Change theme
+    if (data.startsWith('theme_')) {
+      const themeName = data.split('_')[1];
+      const user = getUser(userId);
+      const themePrices = { default: 0, nature: 100, neon: 200 };
+      
+      if (user.coins >= themePrices[themeName]) {
+        if (themePrices[themeName] > 0) {
+          user.coins -= themePrices[themeName];
+        }
+        user.theme = themeName;
+        updateUser(user);
+        await bot.answerCallbackQuery(callbackQuery.id, `✅ تم ${THEMES[themeName].name} فعال شد!`, true);
+      } else {
+        await bot.answerCallbackQuery(callbackQuery.id, '❌ سکه کافی نیست!', true);
       }
-    };
-    await bot.editMessageText(chatId, message.message_id, '🎨 انتخاب تم:', keyboard);
-    return;
-  }
-  
-  // Change theme
-  if (data.startsWith('theme_')) {
-    const themeName = data.split('_')[1];
-    const user = getUser(userId);
-    const themePrices = { default: 0, nature: 100, neon: 200 };
-    
-    if (user.coins >= themePrices[themeName]) {
-      if (themePrices[themeName] > 0) {
-        user.coins -= themePrices[themeName];
-      }
-      user.theme = themeName;
-      updateUser(user);
-      await bot.answerCallbackQuery(callbackQuery.id, `✅ تم ${THEMES[themeName].name} فعال شد!`, true);
-    } else {
-      await bot.answerCallbackQuery(callbackQuery.id, '❌ سکه کافی نیست!', true);
+      
+      await bot.editMessageText(chatId, message.message_id, '🎨 تم تغییر کرد!', getMainMenu());
+      return;
     }
     
-    await bot.editMessageText(chatId, message.message_id, '🎨 تم تغییر کرد!', getMainMenu());
-    return;
+  } catch (err) {
+    console.error('Error in callback handler:', err);
   }
 });
 
