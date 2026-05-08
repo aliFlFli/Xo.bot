@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS users (
 )
 `).run();
 
+// ================= USER =================
+
 function getUser(id) {
   let user = db.prepare(`SELECT * FROM users WHERE id=?`).get(id);
 
@@ -37,25 +39,52 @@ function getUser(id) {
   return user;
 }
 
+// ================= UI =================
+
+function mainMenu() {
+  return {
+    inline_keyboard: [
+      [
+        { text: '🎮 بازی جدید', callback_data: 'new_game' }
+      ],
+      [
+        { text: '💰 کیف پول', callback_data: 'wallet' },
+        { text: '📊 آمار', callback_data: 'stats' }
+      ]
+    ]
+  };
+}
+
 // ================= SEND =================
 
-async function sendMessage(chat_id, text) {
+async function sendMessage(chat_id, text, keyboard = null) {
   try {
     await axios.post(`${API}/sendMessage`, {
       chat_id,
-      text
+      text,
+      reply_markup: keyboard
     });
   } catch (e) {
     console.log("SEND ERROR:", e.message);
   }
 }
 
+async function editMessage(chat_id, message_id, text, keyboard = null) {
+  try {
+    await axios.post(`${API}/editMessageText`, {
+      chat_id,
+      message_id,
+      text,
+      reply_markup: keyboard
+    });
+  } catch (e) {}
+}
+
 // ================= WEBHOOK =================
 
 app.post('/webhook', async (req, res) => {
 
-  // خیلی مهم: سریع جواب بده
-  res.sendStatus(200);
+  res.sendStatus(200); // خیلی مهم
 
   const update = req.body;
 
@@ -68,15 +97,63 @@ app.post('/webhook', async (req, res) => {
 
       return sendMessage(
         update.message.chat.id,
-        `🎮 ربات مین‌روب
+        `🎮 ربات مین‌روب حرفه‌ای
 
 💰 سکه: ${user.coins}
 🏆 برد: ${user.wins}
-💀 باخت: ${user.losses}`
+💀 باخت: ${user.losses}`,
+        mainMenu()
       );
     }
 
-    console.log("UPDATE:", update);
+    // ================= CALLBACK =================
+    if (update.callback_query) {
+
+      const cb = update.callback_query;
+      const data = cb.data;
+
+      const chatId = cb.message.chat.id;
+      const msgId = cb.message.message_id;
+
+      const user = getUser(cb.from.id);
+
+      // WALLET
+      if (data === 'wallet') {
+        return editMessage(
+          chatId,
+          msgId,
+          `💰 موجودی شما:
+
+${user.coins} سکه 🪙`,
+          mainMenu()
+        );
+      }
+
+      // STATS
+      if (data === 'stats') {
+        return editMessage(
+          chatId,
+          msgId,
+          `📊 آمار شما:
+
+🏆 برد: ${user.wins}
+💀 باخت: ${user.losses}`,
+          mainMenu()
+        );
+      }
+
+      // NEW GAME
+      if (data === 'new_game') {
+        return editMessage(
+          chatId,
+          msgId,
+          `🎮 بازی هنوز کامل اضافه نشده 😄
+
+در نسخه بعدی فعال میشه`,
+          mainMenu()
+        );
+      }
+    }
 
   } catch (e) {
     console.log("ERROR:", e.message);
@@ -89,24 +166,20 @@ app.get('/', (req, res) => {
   res.send('OK');
 });
 
-// ================= START SERVER =================
+// ================= START =================
 
 app.listen(PORT, async () => {
 
   console.log("🚀 Server Running On", PORT);
 
   try {
-    await axios.get(
-      `${API}/setWebhook`,
-      {
-        params: {
-          url: `${process.env.WEBHOOK_URL}/webhook`
-        }
+    await axios.get(`${API}/setWebhook`, {
+      params: {
+        url: `${process.env.WEBHOOK_URL}/webhook`
       }
-    );
+    });
 
-    console.log("✅ Webhook Set Successfully");
-
+    console.log("✅ Webhook Set");
   } catch (e) {
     console.log("❌ Webhook Error:", e.message);
   }
