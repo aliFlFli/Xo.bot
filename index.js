@@ -2,8 +2,10 @@ require('dotenv').config();
 
 const express = require('express');
 const axios = require('axios');
+const fs = require('fs');
 
 const app = express();
+
 app.use(express.json());
 
 // ================= CONFIG =================
@@ -12,25 +14,73 @@ const TOKEN = process.env.BOT_TOKEN;
 const API_URL = `https://tapi.bale.ai/bot${TOKEN}`;
 const PORT = process.env.PORT || 3000;
 
-// ================= MEMORY DATABASE =================
+// ================= OFFSET =================
+
+const OFFSET_FILE = './offset.json';
+
+function loadOffset() {
+  try {
+    return JSON.parse(
+      fs.readFileSync(OFFSET_FILE, 'utf8')
+    ).offset || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function saveOffset(offset) {
+  try {
+    fs.writeFileSync(
+      OFFSET_FILE,
+      JSON.stringify({ offset })
+    );
+  } catch (e) {
+    console.log('Offset Save Error:', e.message);
+  }
+}
+
+let lastUpdateId = loadOffset();
+
+// ================= MEMORY =================
 
 const users = {};
 const games = {};
 
-let lastUpdateId = 0;
-
 // ================= SETTINGS =================
 
 const BOARDS = {
-  easy: { size: 4, mines: 2, reward: 10, name: '🍃 آسان' },
-  normal: { size: 5, mines: 5, reward: 25, name: '⚙️ معمولی' },
-  hard: { size: 6, mines: 10, reward: 50, name: '🔥 سخت' }
+  easy: {
+    size: 4,
+    mines: 2,
+    reward: 10,
+    name: '🍃 آسان'
+  },
+
+  normal: {
+    size: 5,
+    mines: 5,
+    reward: 25,
+    name: '⚙️ معمولی'
+  },
+
+  hard: {
+    size: 6,
+    mines: 10,
+    reward: 50,
+    name: '🔥 سخت'
+  }
 };
 
 // ================= HELPERS =================
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function getUser(id) {
+
   if (!users[id]) {
+
     users[id] = {
       coins: 100,
       wins: 0,
@@ -41,26 +91,23 @@ function getUser(id) {
   return users[id];
 }
 
-function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
-
 // ================= GAME =================
 
 function createBoard(size, mines, firstClick) {
+
   const total = size * size;
 
   const board = Array(total).fill(0);
 
   const safe = new Set();
 
-  safe.add(firstClick);
-
   const fx = Math.floor(firstClick / size);
   const fy = firstClick % size;
 
   for (let dx = -1; dx <= 1; dx++) {
+
     for (let dy = -1; dy <= 1; dy++) {
+
       const nx = fx + dx;
       const ny = fy + dy;
 
@@ -75,14 +122,19 @@ function createBoard(size, mines, firstClick) {
     }
   }
 
-  let available = [];
+  const available = [];
 
   for (let i = 0; i < total; i++) {
-    if (!safe.has(i)) available.push(i);
+
+    if (!safe.has(i)) {
+      available.push(i);
+    }
   }
 
   for (let i = 0; i < mines; i++) {
-    const rand = Math.floor(Math.random() * available.length);
+
+    const rand =
+      Math.floor(Math.random() * available.length);
 
     const pos = available[rand];
 
@@ -92,6 +144,7 @@ function createBoard(size, mines, firstClick) {
   }
 
   for (let i = 0; i < total; i++) {
+
     if (board[i] === '💣') continue;
 
     let count = 0;
@@ -100,7 +153,9 @@ function createBoard(size, mines, firstClick) {
     const y = i % size;
 
     for (let dx = -1; dx <= 1; dx++) {
+
       for (let dy = -1; dy <= 1; dy++) {
+
         const nx = x + dx;
         const ny = y + dy;
 
@@ -110,7 +165,9 @@ function createBoard(size, mines, firstClick) {
           ny >= 0 &&
           ny < size
         ) {
-          if (board[nx * size + ny] === '💣') {
+          if (
+            board[nx * size + ny] === '💣'
+          ) {
             count++;
           }
         }
@@ -123,7 +180,13 @@ function createBoard(size, mines, firstClick) {
   return board;
 }
 
-function reveal(board, revealed, size, idx) {
+function reveal(
+  board,
+  revealed,
+  size,
+  idx
+) {
+
   if (revealed[idx]) return;
 
   revealed[idx] = true;
@@ -134,7 +197,9 @@ function reveal(board, revealed, size, idx) {
   const y = idx % size;
 
   for (let dx = -1; dx <= 1; dx++) {
+
     for (let dy = -1; dy <= 1; dy++) {
+
       const nx = x + dx;
       const ny = y + dy;
 
@@ -144,25 +209,33 @@ function reveal(board, revealed, size, idx) {
         ny >= 0 &&
         ny < size
       ) {
+
         const ni = nx * size + ny;
 
         if (
           !revealed[ni] &&
           board[ni] !== '💣'
         ) {
-          reveal(board, revealed, size, ni);
+          reveal(
+            board,
+            revealed,
+            size,
+            ni
+          );
         }
       }
     }
   }
 }
 
-function isWin(game) {
+function checkWin(game) {
+
   const total = game.size * game.size;
 
   let opened = 0;
 
   for (const r of game.revealed) {
+
     if (r) opened++;
   }
 
@@ -171,45 +244,88 @@ function isWin(game) {
 
 // ================= UI =================
 
-function menuKeyboard() {
+function mainMenu() {
+
   return {
     inline_keyboard: [
-      [{ text: '🎮 بازی جدید', callback_data: 'new' }],
+
       [
-        { text: '💰 کیف پول', callback_data: 'wallet' },
-        { text: '📊 آمار', callback_data: 'stats' }
+        {
+          text: '🎮 بازی جدید',
+          callback_data: 'new'
+        }
+      ],
+
+      [
+        {
+          text: '💰 کیف پول',
+          callback_data: 'wallet'
+        },
+
+        {
+          text: '📊 آمار',
+          callback_data: 'stats'
+        }
       ]
     ]
   };
 }
 
-function levelKeyboard() {
+function levelMenu() {
+
   return {
     inline_keyboard: [
-      [{ text: '🍃 آسان', callback_data: 'lv_easy' }],
-      [{ text: '⚙️ معمولی', callback_data: 'lv_normal' }],
-      [{ text: '🔥 سخت', callback_data: 'lv_hard' }]
+
+      [
+        {
+          text: '🍃 آسان',
+          callback_data: 'lv_easy'
+        }
+      ],
+
+      [
+        {
+          text: '⚙️ معمولی',
+          callback_data: 'lv_normal'
+        }
+      ],
+
+      [
+        {
+          text: '🔥 سخت',
+          callback_data: 'lv_hard'
+        }
+      ]
     ]
   };
 }
 
-function render(game) {
+function renderGame(game) {
+
   const rows = [];
 
   for (let i = 0; i < game.size; i++) {
+
     const row = [];
 
     for (let j = 0; j < game.size; j++) {
+
       const idx = i * game.size + j;
 
       let emoji = '◼️';
 
       if (game.revealed[idx]) {
+
         if (game.board[idx] === '💣') {
+
           emoji = '💣';
+
         } else if (game.board[idx] === 0) {
+
           emoji = '⬜';
+
         } else {
+
           emoji = `${game.board[idx]}️⃣`;
         }
       }
@@ -224,7 +340,10 @@ function render(game) {
   }
 
   rows.push([
-    { text: '🏠 منو', callback_data: 'menu' }
+    {
+      text: '🏠 منو',
+      callback_data: 'menu'
+    }
   ]);
 
   return {
@@ -234,69 +353,111 @@ function render(game) {
 
 // ================= API =================
 
-async function sendMessage(chatId, text, keyboard = null) {
+async function sendMessage(
+  chatId,
+  text,
+  keyboard = null
+) {
+
   try {
-    await axios.post(`${API_URL}/sendMessage`, {
-      chat_id: chatId,
-      text,
-      reply_markup: keyboard
-    });
+
+    await axios.post(
+      `${API_URL}/sendMessage`,
+      {
+        chat_id: chatId,
+        text,
+        reply_markup: keyboard
+      }
+    );
+
   } catch (e) {
-    console.log(e.message);
+
+    console.log(
+      'Send Error:',
+      e.response?.data || e.message
+    );
   }
 }
 
-async function editMessage(chatId, msgId, text, keyboard = null) {
+async function editMessage(
+  chatId,
+  msgId,
+  text,
+  keyboard = null
+) {
+
   try {
-    await axios.post(`${API_URL}/editMessageText`, {
-      chat_id: chatId,
-      message_id: msgId,
-      text,
-      reply_markup: keyboard
-    });
+
+    await axios.post(
+      `${API_URL}/editMessageText`,
+      {
+        chat_id: chatId,
+        message_id: msgId,
+        text,
+        reply_markup: keyboard
+      }
+    );
+
   } catch (e) {
-    const err = e.response?.data || e.message;
+
+    const err =
+      e.response?.data || e.message;
 
     if (
-      JSON.stringify(err).includes('not modified')
+      JSON.stringify(err)
+        .includes('not modified')
     ) {
       return;
     }
 
-    console.log(err);
+    console.log('Edit Error:', err);
   }
 }
 
 async function answerCallback(id) {
+
   try {
-    await axios.post(`${API_URL}/answerCallbackQuery`, {
-      callback_query_id: id
-    });
+
+    await axios.post(
+      `${API_URL}/answerCallbackQuery`,
+      {
+        callback_query_id: id
+      }
+    );
+
   } catch {}
 }
 
-// ================= UPDATE HANDLER =================
+// ================= HANDLER =================
 
 async function handleUpdate(update) {
 
-  // START
+  // ================= START =================
 
   if (
     update.message &&
     update.message.text === '/start'
   ) {
-    const user = getUser(update.message.from.id);
+
+    const user =
+      getUser(update.message.from.id);
 
     await sendMessage(
       update.message.chat.id,
-      `🎮 مین روب\n\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins}\n💀 باخت: ${user.losses}`,
-      menuKeyboard()
+
+      `🎮 مین روب حرفه‌ای
+
+💰 سکه: ${user.coins}
+🏆 برد: ${user.wins}
+💀 باخت: ${user.losses}`,
+
+      mainMenu()
     );
 
     return;
   }
 
-  // CALLBACK
+  // ================= CALLBACK =================
 
   if (!update.callback_query) return;
 
@@ -312,9 +473,10 @@ async function handleUpdate(update) {
 
   await answerCallback(cb.id);
 
-  // MENU
+  // ================= MENU =================
 
   if (data === 'menu') {
+
     delete games[userId];
 
     const user = getUser(userId);
@@ -322,92 +484,143 @@ async function handleUpdate(update) {
     return editMessage(
       chatId,
       msgId,
-      `🏠 منو\n\n💰 ${user.coins} سکه`,
-      menuKeyboard()
+
+      `🏠 منوی اصلی
+
+💰 سکه: ${user.coins}
+🏆 برد: ${user.wins}
+💀 باخت: ${user.losses}`,
+
+      mainMenu()
     );
   }
 
-  // NEW GAME
+  // ================= NEW =================
 
   if (data === 'new') {
+
     return editMessage(
       chatId,
       msgId,
-      '🎯 انتخاب سطح:',
-      levelKeyboard()
+      '🎯 سطح بازی را انتخاب کن:',
+      levelMenu()
     );
   }
 
-  // WALLET
+  // ================= WALLET =================
 
   if (data === 'wallet') {
+
     const user = getUser(userId);
 
     return editMessage(
       chatId,
       msgId,
-      `💰 موجودی شما: ${user.coins} سکه`,
-      menuKeyboard()
+
+      `💰 موجودی شما:
+
+${user.coins} سکه 🪙`,
+
+      mainMenu()
     );
   }
 
-  // STATS
+  // ================= STATS =================
 
   if (data === 'stats') {
+
     const user = getUser(userId);
 
     return editMessage(
       chatId,
       msgId,
-      `📊 آمار شما\n\n🏆 برد: ${user.wins}\n💀 باخت: ${user.losses}`,
-      menuKeyboard()
+
+      `📊 آمار شما
+
+🏆 برد: ${user.wins}
+💀 باخت: ${user.losses}
+💰 سکه: ${user.coins}`,
+
+      mainMenu()
     );
   }
 
-  // LEVEL
+  // ================= LEVEL =================
 
   if (data.startsWith('lv_')) {
 
-    const level = data.replace('lv_', '');
+    const level =
+      data.replace('lv_', '');
 
     const cfg = BOARDS[level];
 
     games[userId] = {
+
       level,
+
       size: cfg.size,
+
       mines: cfg.mines,
+
       reward: cfg.reward,
+
       board: null,
-      revealed: Array(cfg.size * cfg.size).fill(false),
+
       waiting: true,
-      createdAt: Date.now()
+
+      createdAt: Date.now(),
+
+      revealed: Array(
+        cfg.size * cfg.size
+      ).fill(false)
     };
 
     return editMessage(
       chatId,
       msgId,
-      `🎮 ${cfg.name}\n💰 جایزه: ${cfg.reward}`,
-      render({
+
+      `🎮 ${cfg.name}
+
+💰 جایزه: ${cfg.reward} سکه
+
+روی خونه‌ها کلیک کن 👇`,
+
+      renderGame({
+
         size: cfg.size,
-        board: Array(cfg.size * cfg.size).fill(0),
-        revealed: Array(cfg.size * cfg.size).fill(false)
+
+        board: Array(
+          cfg.size * cfg.size
+        ).fill(0),
+
+        revealed: Array(
+          cfg.size * cfg.size
+        ).fill(false)
       })
     );
   }
 
-  // OPEN
+  // ================= OPEN =================
 
   if (data.startsWith('o_')) {
 
-    const idx = parseInt(data.split('_')[1]);
+    const idx =
+      parseInt(data.split('_')[1]);
 
     const game = games[userId];
 
-    if (!game) {
+    if (!game) return;
+
+    // جلوگیری از کلیک تکراری
+
+    if (game.revealed[idx]) {
       return;
     }
 
+    // ساخت تخته
+
     if (game.waiting) {
+
       game.board = createBoard(
         game.size,
         game.mines,
@@ -417,12 +630,19 @@ async function handleUpdate(update) {
       game.waiting = false;
     }
 
-    // MINE
+    // برخورد با مین
 
     if (game.board[idx] === '💣') {
 
-      for (let i = 0; i < game.board.length; i++) {
-        if (game.board[i] === '💣') {
+      for (
+        let i = 0;
+        i < game.board.length;
+        i++
+      ) {
+
+        if (
+          game.board[i] === '💣'
+        ) {
           game.revealed[i] = true;
         }
       }
@@ -432,8 +652,10 @@ async function handleUpdate(update) {
       await editMessage(
         chatId,
         msgId,
+
         '💥 باختی!',
-        render(game)
+
+        renderGame(game)
       );
 
       delete games[userId];
@@ -441,7 +663,7 @@ async function handleUpdate(update) {
       return;
     }
 
-    // REVEAL
+    // باز کردن
 
     reveal(
       game.board,
@@ -450,21 +672,25 @@ async function handleUpdate(update) {
       idx
     );
 
-    // WIN
+    // برد
 
-    if (isWin(game)) {
+    if (checkWin(game)) {
 
       const user = getUser(userId);
 
-      user.coins += game.reward;
-
       user.wins++;
+
+      user.coins += game.reward;
 
       await editMessage(
         chatId,
         msgId,
-        `🎉 بردی!\n💰 +${game.reward} سکه`,
-        render(game)
+
+        `🎉 برنده شدی!
+
+💰 +${game.reward} سکه`,
+
+        renderGame(game)
       );
 
       delete games[userId];
@@ -472,50 +698,80 @@ async function handleUpdate(update) {
       return;
     }
 
-    // UPDATE BOARD
+    // آپدیت صفحه
 
     return editMessage(
       chatId,
       msgId,
-      '🎮 بازی در حال اجرا...',
-      render(game)
+
+      `🎮 بازی در حال اجرا...`,
+
+      renderGame(game)
     );
   }
 }
 
 // ================= POLLING =================
 
+let isPolling = false;
+
 async function poll() {
+
+  if (isPolling) return;
+
+  isPolling = true;
 
   try {
 
     const res = await axios.post(
+
       `${API_URL}/getUpdates`,
+
       {
         offset: lastUpdateId + 1,
-        timeout: 25
+        timeout: 20
       },
+
       {
-        timeout: 30000
+        timeout: 25000
       }
     );
 
-    const updates = res.data.result || [];
+    const updates =
+      res.data.result || [];
 
     for (const update of updates) {
 
-      lastUpdateId = update.update_id;
+      if (
+        update.update_id <=
+        lastUpdateId
+      ) {
+        continue;
+      }
+
+      lastUpdateId =
+        update.update_id;
+
+      saveOffset(lastUpdateId);
 
       await handleUpdate(update);
     }
 
   } catch (e) {
-    console.log('Polling Error:', e.message);
+
+    console.log(
+      'Polling Error:',
+      e.response?.data || e.message
+    );
 
     await sleep(2000);
-  }
 
-  setImmediate(poll);
+  } finally {
+
+    isPolling = false;
+
+    setTimeout(poll, 1000);
+  }
 }
 
 // ================= CLEANUP =================
@@ -532,7 +788,12 @@ setInterval(() => {
       now - game.createdAt >
       30 * 60 * 1000
     ) {
+
       delete games[userId];
+
+      console.log(
+        `🧹 Game Removed: ${userId}`
+      );
     }
   }
 
@@ -541,15 +802,18 @@ setInterval(() => {
 // ================= SERVER =================
 
 app.get('/', (req, res) => {
-  res.send('Bot Running');
+  res.send('Bot Online');
 });
 
 app.listen(PORT, () => {
-  console.log(`🚀 Server On ${PORT}`);
+
+  console.log(
+    `🚀 Server Running On ${PORT}`
+  );
 });
 
 // ================= START =================
 
-poll();
-
 console.log('✅ Bot Started');
+
+poll();
