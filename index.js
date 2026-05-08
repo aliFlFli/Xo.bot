@@ -45,11 +45,7 @@ function updateUser(user) {
   db.prepare(`
     UPDATE users SET coins=?, wins=?, losses=?, games_played=?, xp=?, level=?, theme=?, inventory=?
     WHERE user_id=?
-  `).run(
-    user.coins, user.wins, user.losses, user.games_played,
-    user.xp, user.level, user.theme, JSON.stringify(user.inventory),
-    user.user_id
-  );
+  `).run(user.coins, user.wins, user.losses, user.games_played, user.xp, user.level, user.theme, JSON.stringify(user.inventory), user.user_id);
 }
 
 // ================== CONFIG ==================
@@ -90,7 +86,6 @@ class MinesweeperGame {
   }
 
   placeMines(firstIdx) {
-    // همان منطق قبلی...
     const safe = new Set([firstIdx]);
     const x = Math.floor(firstIdx / this.size);
     const y = firstIdx % this.size;
@@ -101,7 +96,7 @@ class MinesweeperGame {
       }
     }
     let positions = [];
-    for (let i = 0; i < this.size*this.size; i++) if (!safe.has(i)) positions.push(i);
+    for (let i = 0; i < this.size * this.size; i++) if (!safe.has(i)) positions.push(i);
 
     for (let i = 0; i < this.mines; i++) {
       const rand = Math.floor(Math.random() * positions.length);
@@ -120,7 +115,7 @@ class MinesweeperGame {
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
           const nx = x + dx, ny = y + dy;
-          if (nx >= 0 && ny >= 0 && nx < this.size && ny < this.size && this.board[nx * this.size + ny] === '💣') count++;
+          if (nx >= 0 && ny >= 0 && nx < this.size && ny < this.size && this.board[nx*this.size + ny] === '💣') count++;
         }
       }
       this.board[i] = count;
@@ -170,26 +165,144 @@ function renderGame(game) {
   }
 
   rows.push([
-    { text: (flagMode.get(`\( {game.chatId}_ \){game.userId}`) ? '🔍 کلیک' : '🚩 پرچم'), callback_data: `flagmode_${game.gameId}` },
+    { text: flagMode.get(`\( {game.chatId}_ \){game.userId}`) ? '🔍 کلیک' : '🚩 پرچم', callback_data: `flagmode_${game.gameId}` },
     { text: '🏠 منو', callback_data: 'main_menu' }
   ]);
 
   return { inline_keyboard: rows };
 }
 
-// ================== SERVER ==================
+// ================== WEBHOOK ==================
 app.post('/webhook', async (req, res) => {
   res.sendStatus(200);
   const update = req.body;
+
   try {
-    // ... (کد قبلی بدون تغییر اساسی)
-    console.log("Update received");
+    const userId = update.message?.from?.id || update.callback_query?.from?.id;
+    if (!userId) return;
+
+    // Start Command
+    if (update.message?.text === '/start') {
+      const user = getUser(userId);
+      await axios.post(`${API}/sendMessage`, {
+        chat_id: update.message.chat.id,
+        text: `🎮 **مین‌روب پرو**\n\n💰 سکه: ${user.coins}\n🏆 برد: ${user.wins} | باخت: ${user.losses}\n⭐ سطح: ${user.level}`,
+        parse_mode: "Markdown",
+        reply_markup: { inline_keyboard: [[{ text: '🎮 بازی جدید', callback_data: 'new_game' }]] }
+      });
+      return;
+    }
+
+    if (!update.callback_query) return;
+
+    const cb = update.callback_query;
+    const data = cb.data;
+    const chatId = cb.message.chat.id;
+    const msgId = cb.message.message_id;
+
+    await axios.post(`${API}/answerCallbackQuery`, { callback_query_id: cb.id });
+
+    if (data === 'main_menu') {
+      const user = getUser(userId);
+      await axios.post(`${API}/editMessageText`, {
+        chat_id: chatId, message_id: msgId,
+        text: `🎯 منوی اصلی\n\n💰 ${user.coins} سکه`,
+        reply_markup: { inline_keyboard: [[{ text: '🎮 بازی جدید', callback_data: 'new_game' }]] }
+      });
+      return;
+    }
+
+    if (data === 'new_game') {
+      const kb = Object.keys(DIFFICULTY).map(k => [{ text: DIFFICULTY[k].name, callback_data: `diff_${k}` }]);
+      await axios.post(`${API}/editMessageText`, {
+        chat_id: chatId, message_id: msgId,
+        text: '🎲 سطح را انتخاب کنید:',
+        reply_markup: { inline_keyboard: kb }
+      });
+      return;
+    }
+
+    if (data.startsWith('diff_')) {
+      const diff = data.split('_')[1];
+      const game = new MinesweeperGame(diff, userId, chatId);
+      games.set(`\( {chatId}_ \){userId}`, game);
+
+      await axios.post(`${API}/editMessageText`, {
+        chat_id: chatId, message_id: msgId,
+        text: `🎮 ${DIFFICULTY[diff].name} شروع شد!`,
+        reply_markup: renderGame(game)
+      });
+      return;
+    }
+
+    const gameKey = `\( {chatId}_ \){userId}`;
+    let game = games.get(gameKey);
+    if (!game) return;
+
+    if (data.startsWith('flagmode_')) {
+      flagMode.set(gameKey, !flagMode.get(gameKey));
+      await axios.post(`${API}/editMessageText`, {
+        chat_id: chatId, message_id: msgId,
+        text: `🎮 ${DIFFICULTY[game.difficulty].name}`,
+        reply_markup: renderGame(game)
+      });
+      return;
+    }
+
+    if (data.startsWith('cell_')) {
+      const idx = parseInt(data.split('_')[3]);
+      const isFlag = flagMode.get(gameKey) || false;
+
+      if (!game.minesPlaced) game.placeMines(idx);
+
+      if (!isFlag) {
+        if (game.board[idx] === '💣') {
+          game.revealed.fill(true);
+          const user = getUser(userId);
+          user.losses++; user.games_played++;
+          updateUser(user);
+
+          await axios.post(`${API}/editMessageText`, {
+            chat_id: chatId, message_id: msgId,
+            text: '💥 باختی!',
+            reply_markup: renderGame(game)
+          });
+          games.delete(gameKey);
+          return;
+        }
+
+        game.flood(idx);
+        game.moves++;
+
+        if (game.checkWin()) {
+          const user = getUser(userId);
+          user.wins++; user.coins += game.coin; user.games_played++; user.xp += 25;
+          if (user.xp >= 200) { user.level++; user.xp = 50; }
+          updateUser(user);
+
+          await axios.post(`${API}/editMessageText`, {
+            chat_id: chatId, message_id: msgId,
+            text: `🎉 بردی! +${game.coin} سکه`,
+            reply_markup: renderGame(game)
+          });
+          games.delete(gameKey);
+          return;
+        }
+      } else {
+        game.flags[idx] = !game.flags[idx];
+      }
+
+      await axios.post(`${API}/editMessageText`, {
+        chat_id: chatId, message_id: msgId,
+        text: `🎮 ${DIFFICULTY[game.difficulty].name}`,
+        reply_markup: renderGame(game)
+      });
+    }
+
   } catch (e) {
-    console.error(e);
+    console.error('Error:', e.message);
   }
 });
 
-app.get('/', (req, res) => res.send('✅ Bot is Running'));
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
-console.log('🤖 Minesweeper Bot Started!');
+app.get('/', (req, res) => res.send('✅ Minesweeper Bot Running on Bale'));
+app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
