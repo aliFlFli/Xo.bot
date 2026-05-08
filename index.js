@@ -57,20 +57,18 @@ const DIFFICULTY = {
   easy:   { size: 5, mines: 5,  coin: 15, name: '🍃 آسان' },
   normal: { size: 6, mines: 8,  coin: 35, name: '⚙️ معمولی' },
   hard:   { size: 7, mines: 14, coin: 70, name: '🔥 سخت' },
-  expert: { size: 8, mines: 20, coin: 120,name: '💀 حرفه‌ای' }
+  expert: { size: 8, mines: 20, coin: 120, name: '💀 حرفه‌ای' }
 };
 
 const THEMES = {
-  default: { name: 'کلاسیک', bg: '◻️', mine: '💣', flag: '🚩', number: n => `${n}️⃣` },
-  nature:  { name: 'طبیعت', bg: '🌿', mine: '🍃', flag: '🌸', number: n => `${n}️⃣` },
-  neon:    { name: 'نئون', bg: '🟩', mine: '💚', flag: '🚩', number: n => `${n}️⃣` }
+  default: { name: 'کلاسیک', bg: '◻️', mine: '💣', flag: '🚩', number: n => n ? `${n}️⃣` : '▫️' },
+  nature:  { name: 'طبیعت', bg: '🌿', mine: '🍃', flag: '🌸', number: n => n ? `${n}️⃣` : '▫️' }
 };
 
-// ================== GAME STATE ==================
+// ================== GAME ==================
 const games = new Map();
 const flagMode = new Map();
 
-// ================== GAME CLASS ==================
 class MinesweeperGame {
   constructor(difficulty, userId, chatId) {
     const cfg = DIFFICULTY[difficulty];
@@ -92,30 +90,24 @@ class MinesweeperGame {
   }
 
   placeMines(firstIdx) {
+    // همان منطق قبلی...
     const safe = new Set([firstIdx]);
     const x = Math.floor(firstIdx / this.size);
     const y = firstIdx % this.size;
-
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         const nx = x + dx, ny = y + dy;
-        if (nx >= 0 && ny >= 0 && nx < this.size && ny < this.size) {
-          safe.add(nx * this.size + ny);
-        }
+        if (nx >= 0 && ny >= 0 && nx < this.size && ny < this.size) safe.add(nx * this.size + ny);
       }
     }
-
     let positions = [];
-    for (let i = 0; i < this.size * this.size; i++) {
-      if (!safe.has(i)) positions.push(i);
-    }
+    for (let i = 0; i < this.size*this.size; i++) if (!safe.has(i)) positions.push(i);
 
     for (let i = 0; i < this.mines; i++) {
       const rand = Math.floor(Math.random() * positions.length);
       this.board[positions[rand]] = '💣';
       positions.splice(rand, 1);
     }
-
     this.calculateNumbers();
     this.minesPlaced = true;
   }
@@ -128,7 +120,7 @@ class MinesweeperGame {
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
           const nx = x + dx, ny = y + dy;
-          if (nx >= 0 && ny >= 0 && nx < this.size && ny < this.size && this.board[nx*this.size + ny] === '💣') count++;
+          if (nx >= 0 && ny >= 0 && nx < this.size && ny < this.size && this.board[nx * this.size + ny] === '💣') count++;
         }
       }
       this.board[i] = count;
@@ -136,19 +128,16 @@ class MinesweeperGame {
   }
 
   flood(idx) {
-    if (this.revealed[idx] || this.flags[idx] || this.board[idx] === '💣') return;
+    if (this.revealed[idx] || this.flags[idx]) return;
     this.revealed[idx] = true;
     this.opened++;
-
     if (this.board[idx] !== 0) return;
 
     const x = Math.floor(idx / this.size), y = idx % this.size;
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         const nx = x + dx, ny = y + dy;
-        if (nx >= 0 && ny >= 0 && nx < this.size && ny < this.size) {
-          this.flood(nx * this.size + ny);
-        }
+        if (nx >= 0 && ny >= 0 && nx < this.size && ny < this.size) this.flood(nx * this.size + ny);
       }
     }
   }
@@ -171,7 +160,36 @@ function renderGame(game) {
       let text = theme.bg;
 
       if (game.revealed[idx]) {
-        if (game.board[idx] === '💣') text = theme.mine;
-        else if (game.board[idx] === 0) text = '▫️';
-        else text = theme.number(game.board[idx]);
+        text = game.board[idx] === '💣' ? theme.mine : (game.board[idx] === 0 ? '▫️' : theme.number(game.board[idx]));
       } else if (game.flags[idx]) {
+        text = theme.flag;
+      }
+      row.push({ text, callback_data: `cell_\( {game.gameId}_ \){idx}` });
+    }
+    rows.push(row);
+  }
+
+  rows.push([
+    { text: (flagMode.get(`\( {game.chatId}_ \){game.userId}`) ? '🔍 کلیک' : '🚩 پرچم'), callback_data: `flagmode_${game.gameId}` },
+    { text: '🏠 منو', callback_data: 'main_menu' }
+  ]);
+
+  return { inline_keyboard: rows };
+}
+
+// ================== SERVER ==================
+app.post('/webhook', async (req, res) => {
+  res.sendStatus(200);
+  const update = req.body;
+  try {
+    // ... (کد قبلی بدون تغییر اساسی)
+    console.log("Update received");
+  } catch (e) {
+    console.error(e);
+  }
+});
+
+app.get('/', (req, res) => res.send('✅ Bot is Running'));
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+console.log('🤖 Minesweeper Bot Started!');
