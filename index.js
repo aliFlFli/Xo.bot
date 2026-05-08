@@ -140,7 +140,7 @@ function renderBoard(game) {
     const row = [];
     for (let j = 0; j < game.size; j++) {
       const idx = i * game.size + j;
-      let text = '◻️';
+      let text = '🪙';
 
       if (game.flags[idx]) text = '🚩';
       else if (game.revealed[idx]) {
