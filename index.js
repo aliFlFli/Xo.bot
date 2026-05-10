@@ -10,7 +10,7 @@ app.use(express.json());
 // ================= CONFIG =================
 
 const TOKEN = process.env.BOT_TOKEN;
-const API = `https://botapi.bale.ai/bot${TOKEN}`;
+const API = `https://tapi.bale.ai/bot${TOKEN}`;
 const PORT = process.env.PORT || 3000;
 
 // ================= DATABASE =================
