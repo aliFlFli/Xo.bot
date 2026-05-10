@@ -10,7 +10,10 @@ app.use(express.json());
 // ================= CONFIG =================
 
 const TOKEN = process.env.BOT_TOKEN;
+
+// API درست بله
 const API = `https://tapi.bale.ai/bot${TOKEN}`;
+
 const PORT = process.env.PORT || 3000;
 
 // ================= DATABASE =================
@@ -24,7 +27,7 @@ CREATE TABLE IF NOT EXISTS users (
 )
 `).run();
 
-// ================= GAME STORE =================
+// ================= GAME STORAGE =================
 
 const games = new Map();
 
@@ -45,14 +48,12 @@ function addCoins(id, amount) {
     db.prepare(`UPDATE users SET coins = coins + ? WHERE user_id=?`).run(amount, id);
 }
 
-function topUsers() {
-    return db.prepare(`SELECT * FROM users ORDER BY coins DESC LIMIT 10`).all();
-}
-
 // ================= BOARD =================
 
 function createBoard(size, mines) {
-    const board = Array.from({ length: size }, () => Array(size).fill(0));
+    const board = Array.from({ length: size }, () =>
+        Array(size).fill(0)
+    );
 
     let placed = 0;
 
@@ -99,7 +100,7 @@ function keyboard(game) {
 
 // ================= SEND =================
 
-async function send(chatId, text, kb) {
+async function sendMessage(chatId, text, kb) {
     try {
         await axios.post(`${API}/sendMessage`, {
             chat_id: chatId,
@@ -107,15 +108,17 @@ async function send(chatId, text, kb) {
             reply_markup: kb
         });
     } catch (e) {
-        console.log(e.response?.data || e.message);
+        console.log("SEND ERROR:", e.response?.data || e.message);
     }
 }
 
-// ================= ROUTES =================
+// ================= HEALTH CHECK =================
 
 app.get('/', (req, res) => {
-    res.send('Mines Bot Online');
+    res.send('✅ Bot is running');
 });
+
+// ================= WEBHOOK =================
 
 app.post('/', async (req, res) => {
 
@@ -123,21 +126,31 @@ app.post('/', async (req, res) => {
 
     try {
 
+        console.log("📦 UPDATE:");
+        console.log(JSON.stringify(req.body, null, 2));
+
         const update = req.body;
+
+        if (!update.message && !update.callback_query) return;
+
+        // ================= MESSAGE =================
 
         if (update.message) {
 
             const msg = update.message;
+
             const chatId = msg.chat.id;
             const userId = msg.from.id;
-            const text = msg.text || '';
+
+            const text = msg.text || msg.body || '';
 
             const user = getUser(userId);
 
             // START
             if (text === '/start') {
-                return send(chatId,
-`🎮 مین‌روب
+
+                return sendMessage(chatId,
+`🎮 مین‌روب بله
 
 💰 سکه: ${user.coins}
 
@@ -146,25 +159,11 @@ app.post('/', async (req, res) => {
                 );
             }
 
-            // LEADERBOARD
-            if (text === '/leaderboard') {
-
-                const top = topUsers();
-
-                let msg = '🏆 لیدربورد\n\n';
-
-                top.forEach((u, i) => {
-                    msg += `${i + 1}. ${u.user_id} - ${u.coins}\n`;
-                });
-
-                return send(chatId, msg);
-            }
-
             // START GAME
             if (text === '/startgame') {
 
                 if (user.coins < 10)
-                    return send(chatId, '❌ سکه کافی نیست');
+                    return sendMessage(chatId, '❌ سکه کافی نیست');
 
                 addCoins(userId, -10);
 
@@ -172,28 +171,35 @@ app.post('/', async (req, res) => {
                     size: 4,
                     mines: 3,
                     board: createBoard(4, 3),
-                    open: Array.from({ length: 4 }, () => Array(4).fill(false)),
+                    open: Array.from({ length: 4 }, () =>
+                        Array(4).fill(false)
+                    ),
                     opened: 0,
                     safe: 13
                 };
 
                 games.set(userId, game);
 
-                return send(chatId,
+                return sendMessage(
+                    chatId,
 `💣 بازی شروع شد
-🎯 3 مین
-💰 جایزه 25`
-, keyboard(game));
+
+🎯 مین‌ها: 3
+💰 جایزه: 25`
+,
+                    keyboard(game)
+                );
             }
         }
 
-        // CALLBACK
+        // ================= CALLBACK =================
+
         if (update.callback_query) {
 
             const q = update.callback_query;
+
             const userId = q.from.id;
             const chatId = q.message.chat.id;
-            const msgId = q.message.message_id;
 
             const game = games.get(userId);
             if (!game) return;
@@ -209,7 +215,7 @@ app.post('/', async (req, res) => {
 
                 games.delete(userId);
 
-                return send(chatId, '💥 باختی!');
+                return sendMessage(chatId, '💥 باختی!');
             }
 
             game.opened++;
@@ -221,18 +227,17 @@ app.post('/', async (req, res) => {
 
                 games.delete(userId);
 
-                return send(chatId, '🏆 بردی +25 سکه');
+                return sendMessage(chatId, '🏆 بردی +25 سکه');
             }
-
         }
 
     } catch (err) {
-        console.log(err.message);
+        console.log("❌ ERROR:", err.message);
     }
 });
 
 // ================= START =================
 
 app.listen(PORT, '0.0.0.0', () => {
-    console.log('BOT RUNNING');
+    console.log("🚀 BOT RUNNING ON", PORT);
 });
