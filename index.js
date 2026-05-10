@@ -1,284 +1,311 @@
-const { Telegraf, Markup } = require('telegraf');
 require('dotenv').config();
 
-// ================== CONFIG ==================
-const SIZE = 5;
-const MINES = 5;
+const express = require('express');
+const axios = require('axios');
+const Database = require('better-sqlite3');
 
-const bot = new Telegraf(process.env.BOT_TOKEN);
-const games = new Map();
-let flagMode = new Map();
+const app = express();
+app.use(express.json());
 
-// ================== GAME CLASS ==================
-class MinesweeperGame {
-  constructor() {
-    this.size = SIZE;
-    this.totalCells = SIZE * SIZE;
-    this.minesCount = MINES;
-    this.board = Array(this.totalCells).fill(0);
-    this.revealed = Array(this.totalCells).fill(false);
-    this.flags = Array(this.totalCells).fill(false);
-    this.alive = true;
-    this.opened = 0;
-    this.startTime = Date.now();
-    
-    this.placeMines();
-    this.calculateNumbers();
+const TOKEN = process.env.BOT_TOKEN;
+const API = `https://tapi.bale.ai/bot${TOKEN}`;
+const PORT = process.env.PORT || 3000;
+
+// ================= DB =================
+
+const db = new Database('bot.db');
+
+db.prepare(`
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY,
+  coins INTEGER DEFAULT 100,
+  wins INTEGER DEFAULT 0,
+  losses INTEGER DEFAULT 0
+)
+`).run();
+
+function getUser(id) {
+  let u = db.prepare(`SELECT * FROM users WHERE id=?`).get(id);
+  if (!u) {
+    db.prepare(`INSERT INTO users (id) VALUES (?)`).run(id);
+    u = db.prepare(`SELECT * FROM users WHERE id=?`).get(id);
   }
-  
-  placeMines() {
-    let placed = 0;
-    while (placed < this.minesCount) {
-      const idx = Math.floor(Math.random() * this.totalCells);
-      if (this.board[idx] !== '💣') {
-        this.board[idx] = '💣';
-        placed++;
+  return u;
+}
+
+function win(id, reward) {
+  db.prepare(`UPDATE users SET wins=wins+1, coins=coins+? WHERE id=?`)
+    .run(reward, id);
+}
+
+function loss(id) {
+  db.prepare(`UPDATE users SET losses=losses+1 WHERE id=?`)
+    .run(id);
+}
+
+// ================= GAME =================
+
+const games = {};
+const clickLock = {};
+
+const LEVELS = {
+  easy: { size: 4, mines: 2, reward: 10, name: '🍃 آسان' },
+  normal: { size: 5, mines: 5, reward: 25, name: '⚙️ معمولی' },
+  hard: { size: 6, mines: 10, reward: 50, name: '🔥 سخت' }
+};
+
+// ================= BOARD =================
+
+function createBoard(size, mines, safe) {
+  const total = size * size;
+  const board = Array(total).fill(0);
+
+  const safeSet = new Set([safe]);
+
+  const sx = Math.floor(safe / size);
+  const sy = safe % size;
+
+  for (let x = -1; x <= 1; x++) {
+    for (let y = -1; y <= 1; y++) {
+      const nx = sx + x;
+      const ny = sy + y;
+
+      if (nx >= 0 && ny >= 0 && nx < size && ny < size) {
+        safeSet.add(nx * size + ny);
       }
     }
   }
-  
-  calculateNumbers() {
-    for (let i = 0; i < this.totalCells; i++) {
-      if (this.board[i] === '💣') continue;
-      
-      let count = 0;
-      const x = Math.floor(i / this.size);
-      const y = i % this.size;
-      
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dy = -1; dy <= 1; dy++) {
-          const nx = x + dx;
-          const ny = y + dy;
-          if (nx >= 0 && nx < this.size && ny >= 0 && ny < this.size) {
-            if (this.board[nx * this.size + ny] === '💣') count++;
-          }
-        }
-      }
-      this.board[i] = count;
-    }
+
+  let arr = [];
+  for (let i = 0; i < total; i++) {
+    if (!safeSet.has(i)) arr.push(i);
   }
-  
-  revealEmpty(idx) {
-    if (this.revealed[idx] || this.flags[idx]) return;
-    
-    this.revealed[idx] = true;
-    this.opened++;
-    
-    if (this.board[idx] !== 0) return;
-    
-    const x = Math.floor(idx / this.size);
-    const y = idx % this.size;
-    
+
+  for (let i = 0; i < mines; i++) {
+    const r = Math.floor(Math.random() * arr.length);
+    board[arr[r]] = '💣';
+    arr.splice(r, 1);
+  }
+
+  for (let i = 0; i < total; i++) {
+    if (board[i] === '💣') continue;
+
+    let c = 0;
+    const x = Math.floor(i / size);
+    const y = i % size;
+
     for (let dx = -1; dx <= 1; dx++) {
       for (let dy = -1; dy <= 1; dy++) {
         const nx = x + dx;
         const ny = y + dy;
-        if (nx >= 0 && nx < this.size && ny >= 0 && ny < this.size) {
-          const neighborIdx = nx * this.size + ny;
-          if (!this.revealed[neighborIdx] && this.board[neighborIdx] !== '💣') {
-            this.revealEmpty(neighborIdx);
-          }
+
+        if (
+          nx >= 0 && ny >= 0 &&
+          nx < size && ny < size
+        ) {
+          if (board[nx * size + ny] === '💣') c++;
         }
       }
     }
+
+    board[i] = c;
   }
-  
-  revealAllMines() {
-    for (let i = 0; i < this.totalCells; i++) {
-      if (this.board[i] === '💣') {
-        this.revealed[i] = true;
+
+  return board;
+}
+
+// ================= FLOOD =================
+
+function flood(game, idx) {
+  const size = game.size;
+
+  if (game.revealed[idx] || game.flags[idx]) return;
+
+  game.revealed[idx] = true;
+
+  if (game.board[idx] !== 0) return;
+
+  const x = Math.floor(idx / size);
+  const y = idx % size;
+
+  for (let dx = -1; dx <= 1; dx++) {
+    for (let dy = -1; dy <= 1; dy++) {
+      const nx = x + dx;
+      const ny = y + dy;
+
+      if (
+        nx >= 0 && ny >= 0 &&
+        nx < size && ny < size
+      ) {
+        flood(game, nx * size + ny);
       }
     }
   }
-  
-  checkWin() {
-    return this.opened === this.totalCells - this.minesCount;
-  }
-  
-  getTime() {
-    return Math.floor((Date.now() - this.startTime) / 1000);
-  }
 }
 
-// ================== RENDER ==================
-function renderGame(game, gameOver = false) {
+// ================= UI =================
+
+function render(game) {
   const rows = [];
-  
+
   for (let i = 0; i < game.size; i++) {
     const row = [];
+
     for (let j = 0; j < game.size; j++) {
       const idx = i * game.size + j;
-      let display = '⬜';
-      
-      if (game.revealed[idx]) {
-        if (game.board[idx] === '💣') display = '💣';
-        else if (game.board[idx] === 0) display = '▪️';
-        else display = String(game.board[idx]);
-      } else if (game.flags[idx]) {
-        display = '🚩';
+
+      let t = '◻️';
+
+      if (game.flags[idx]) t = '🚩';
+
+      else if (game.revealed[idx]) {
+        if (game.board[idx] === '💣') t = '💣';
+        else if (game.board[idx] === 0) t = '▫️';
+        else t = `${game.board[idx]}️⃣`;
       }
-      
-      row.push(Markup.button.callback(display, `cell_${idx}`));
+
+      row.push({
+        text: t,
+        callback_data: `c_${idx}`
+      });
     }
+
     rows.push(row);
   }
-  
-  const controlRow = [];
-  if (!gameOver && game.alive) {
-    controlRow.push(Markup.button.callback('🏁 پرچم', 'toggle_flag'));
-  }
-  controlRow.push(Markup.button.callback('🔄 جدید', 'new_game'));
-  controlRow.push(Markup.button.callback('🏠 منو', 'menu'));
-  rows.push(controlRow);
-  
-  return Markup.inlineKeyboard(rows);
+
+  rows.push([
+    { text: '🏠 منو', callback_data: 'menu' }
+  ]);
+
+  return { inline_keyboard: rows };
 }
 
-// ================== BOT COMMANDS ==================
-bot.start((ctx) => {
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('🎮 شروع بازی', 'start_game')]
-  ]);
-  
-  ctx.reply(
-    `💣 **ماین‌سوییپر کلاسیک**\n\n` +
-    `• تخته ${SIZE}×${SIZE}\n` +
-    `• ${MINES} مین\n` +
-    `• روی خانه‌ها کلیک کن\n` +
-    `• 🏁 پرچم مین‌ها رو علامت بزن\n\n` +
-    `🎯 شروع کن!`,
-    keyboard
-  );
-});
+// ================= WEBHOOK =================
 
-// ================== ACTIONS ==================
-bot.action('start_game', (ctx) => {
-  const game = new MinesweeperGame();
-  games.set(ctx.chat.id, game);
-  flagMode.set(ctx.chat.id, false);
-  
-  ctx.editMessageText(
-    `💣 بازی شروع شد!\n⏱️ زمان: 0`,
-    renderGame(game, false)
-  );
-  ctx.answerCbQuery();
-});
+app.post('/webhook', async (req, res) => {
 
-bot.action('menu', (ctx) => {
-  games.delete(ctx.chat.id);
-  flagMode.delete(ctx.chat.id);
-  
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('🎮 شروع بازی', 'start_game')]
-  ]);
-  
-  ctx.editMessageText(
-    `💣 **ماین‌سوییپر کلاسیک**\n\n` +
-    `• تخته ${SIZE}×${SIZE}\n` +
-    `• ${MINES} مین\n` +
-    `• روی خانه‌ها کلیک کن\n` +
-    `• 🏁 پرچم مین‌ها رو علامت بزن`,
-    keyboard
-  );
-});
+  res.sendStatus(200);
 
-bot.action('new_game', (ctx) => {
-  const game = new MinesweeperGame();
-  games.set(ctx.chat.id, game);
-  flagMode.set(ctx.chat.id, false);
-  
-  ctx.editMessageText(
-    `💣 بازی جدید!\n⏱️ زمان: 0`,
-    renderGame(game, false)
-  );
-  ctx.answerCbQuery();
-});
+  const u = req.body;
 
-bot.action('toggle_flag', (ctx) => {
-  const current = flagMode.get(ctx.chat.id) || false;
-  flagMode.set(ctx.chat.id, !current);
-  ctx.answerCbQuery(`${!current ? '🏁 حالت پرچم' : '🔍 حالت کلیک'} فعال شد`);
-});
+  try {
 
-bot.action(/cell_(\d+)/, async (ctx) => {
-  const game = games.get(ctx.chat.id);
-  if (!game || !game.alive) {
-    await ctx.answerCbQuery('❌ بازی فعال نیست! شروع کن');
-    return;
-  }
-  
-  const idx = parseInt(ctx.match[1]);
-  const isFlagMode = flagMode.get(ctx.chat.id) || false;
-  
-  // حالت پرچم
-  if (isFlagMode) {
-    if (game.revealed[idx]) {
-      await ctx.answerCbQuery('❌ نمیشه روی خونه باز شده پرچم زد');
-      return;
+    // START
+    if (u.message?.text === '/start') {
+      const user = getUser(u.message.from.id);
+
+      return axios.post(`${API}/sendMessage`, {
+        chat_id: u.message.chat.id,
+        text: `🎮 Minesweeper PRO
+
+💰 ${user.coins}
+🏆 ${user.wins}
+💀 ${user.losses}`,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: '🎮 بازی جدید', callback_data: 'new' }]
+          ]
+        }
+      });
     }
-    
-    game.flags[idx] = !game.flags[idx];
-    const flagCount = game.flags.filter(f => f).length;
-    
-    await ctx.editMessageText(
-      `💣 ماین‌سوییپر\n🚩 پرچم: ${flagCount}/${MINES}\n⏱️ زمان: ${game.getTime()}`,
-      renderGame(game, false)
-    );
-    await ctx.answerCbQuery(game.flags[idx] ? '🚩 پرچم زده شد' : '🔓 پرچم برداشته شد');
-    return;
+
+    if (!u.callback_query) return;
+
+    const cb = u.callback_query;
+    const data = cb.data;
+
+    const chat = cb.message.chat.id;
+    const msg = cb.message.message_id;
+    const uid = cb.from.id;
+
+    if (clickLock[uid]) return;
+    clickLock[uid] = true;
+    setTimeout(() => delete clickLock[uid], 200);
+
+    // NEW GAME
+    if (data === 'new') {
+
+      games[uid] = {
+        size: 4,
+        mines: 2,
+        reward: 10,
+        board: null,
+        revealed: Array(16).fill(false),
+        flags: Array(16).fill(false),
+        first: true
+      };
+
+      return axios.post(`${API}/editMessageText`, {
+        chat_id: chat,
+        message_id: msg,
+        text: '🎮 شروع بازی',
+        reply_markup: render(games[uid])
+      });
+    }
+
+    // CLICK
+    if (data.startsWith('c_')) {
+
+      const idx = +data.split('_')[1];
+      const g = games[uid];
+
+      if (!g) return;
+
+      // first click
+      if (g.first) {
+        g.board = createBoard(g.size, g.mines, idx);
+        g.first = false;
+      }
+
+      // mine
+      if (g.board[idx] === '💣') {
+
+        g.revealed.fill(true);
+
+        loss(uid);
+
+        return axios.post(`${API}/editMessageText`, {
+          chat_id: chat,
+          message_id: msg,
+          text: '💥 باختی!',
+          reply_markup: render(g)
+        });
+      }
+
+      // reveal
+      flood(g, idx);
+
+      // win
+      let open = g.revealed.filter(x => x).length;
+      if (open === g.size * g.size - g.mines) {
+
+        win(uid, g.reward);
+
+        return axios.post(`${API}/editMessageText`, {
+          chat_id: chat,
+          message_id: msg,
+          text: `🎉 بردی +${g.reward}`,
+          reply_markup: render(g)
+        });
+      }
+
+      return axios.post(`${API}/editMessageText`, {
+        chat_id: chat,
+        message_id: msg,
+        text: '🎮 ادامه...',
+        reply_markup: render(g)
+      });
+    }
+
+  } catch (e) {
+    console.log(e.message);
   }
-  
-  // حالت کلیک عادی
-  if (game.revealed[idx]) {
-    await ctx.answerCbQuery('🔓 قبلاً باز شده');
-    return;
-  }
-  
-  if (game.flags[idx]) {
-    await ctx.answerCbQuery('🚩 اول پرچم رو بردار');
-    return;
-  }
-  
-  // برخورد با مین
-  if (game.board[idx] === '💣') {
-    game.alive = false;
-    game.revealAllMines();
-    
-    await ctx.editMessageText(
-      `💥 **باختی!** 💀\n⏱️ زمان: ${game.getTime()}`,
-      renderGame(game, true)
-    );
-    await ctx.answerCbQuery('💣 روی مین کلیک کردی!');
-    return;
-  }
-  
-  // باز کردن خونه
-  game.revealEmpty(idx);
-  
-  // بررسی برد
-  if (game.checkWin()) {
-    game.alive = false;
-    await ctx.editMessageText(
-      `🎉 **بردی!** 🎉\n⏱️ زمان: ${game.getTime()}`,
-      renderGame(game, true)
-    );
-    await ctx.answerCbQuery('🎉 بردی! آفرین!');
-    return;
-  }
-  
-  // آپدیت صفحه
-  const flagCount = game.flags.filter(f => f).length;
-  await ctx.editMessageText(
-    `💣 ماین‌سوییپر\n🚩 پرچم: ${flagCount}/${MINES}\n⏱️ زمان: ${game.getTime()}`,
-    renderGame(game, false)
-  );
-  await ctx.answerCbQuery('✅ باز شد');
 });
 
-// ================== LAUNCH ==================
-bot.launch()
-  .then(() => console.log('🚀 Minesweeper Bot Running!'))
-  .catch(console.error);
+// ================= SERVER =================
 
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+app.get('/', (req, res) => res.send('OK'));
+
+app.listen(PORT, () => {
+  console.log('🚀 Running');
+});
