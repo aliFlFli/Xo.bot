@@ -7,280 +7,276 @@ const Database = require('better-sqlite3');
 const app = express();
 app.use(express.json());
 
+// ================= CONFIG =================
+
 const TOKEN = process.env.BOT_TOKEN;
 const API = `https://tapi.bale.ai/bot${TOKEN}`;
+
 const PORT = process.env.PORT || 3000;
 
-// ================= DB =================
-const db = new Database('bot.db');
+const db = new Database('database.db');
+
+// ================= DATABASE =================
 
 db.prepare(`
-  CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY,
-    coins INTEGER DEFAULT 100,
-    wins INTEGER DEFAULT 0,
-    losses INTEGER DEFAULT 0
-  )
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    coins INTEGER DEFAULT 100
+)
 `).run();
 
-function getUser(id) {
-  let user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id);
-  if (!user) {
-    db.prepare(`INSERT INTO users (id) VALUES (?)`).run(id);
-    user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id);
-  }
-  return user;
+// ================= GAME STORAGE =================
+
+const games = new Map();
+
+// ================= FUNCTIONS =================
+
+function getUser(userId) {
+    let user = db.prepare(`
+        SELECT * FROM users WHERE user_id = ?
+    `).get(userId);
+
+    if (!user) {
+        db.prepare(`
+            INSERT INTO users (user_id)
+            VALUES (?)
+        `).run(userId);
+
+        user = {
+            user_id: userId,
+            coins: 100
+        };
+    }
+
+    return user;
 }
 
-// ================= GAME STATE =================
-const games = new Map(); // uid => game
+function updateCoins(userId, amount) {
+    db.prepare(`
+        UPDATE users
+        SET coins = coins + ?
+        WHERE user_id = ?
+    `).run(amount, userId);
+}
 
-const LEVELS = {
-  easy:   { size: 5,  mines: 5,  reward: 15,  name: '🍃 آسان' },
-  normal: { size: 6,  mines: 8,  reward: 35,  name: '⚙️ معمولی' },
-  hard:   { size: 7,  mines: 14, reward: 70,  name: '🔥 سخت' }
-};
+function generateBoard(size, mines) {
+    const board = [];
 
-// ================= BOARD CREATION =================
-function createBoard(size, mines, firstClick) {
-  const total = size * size;
-  let board = Array(total).fill(0);
-  const safeSet = new Set();
+    for (let y = 0; y < size; y++) {
+        board[y] = [];
 
-  // 3x3 اطراف اولین کلیک امن باشه
-  const fx = Math.floor(firstClick / size);
-  const fy = firstClick % size;
-
-  for (let x = -1; x <= 1; x++) {
-    for (let y = -1; y <= 1; y++) {
-      const nx = fx + x, ny = fy + y;
-      if (nx >= 0 && ny >= 0 && nx < size && ny < size) {
-        safeSet.add(nx * size + ny);
-      }
-    }
-  }
-
-  let positions = [];
-  for (let i = 0; i < total; i++) {
-    if (!safeSet.has(i)) positions.push(i);
-  }
-
-  // قرار دادن مین‌ها
-  for (let i = 0; i < mines; i++) {
-    const rand = Math.floor(Math.random() * positions.length);
-    board[positions[rand]] = '💣';
-    positions.splice(rand, 1);
-  }
-
-  // شمارش اعداد
-  for (let i = 0; i < total; i++) {
-    if (board[i] === '💣') continue;
-    let count = 0;
-    const x = Math.floor(i / size), y = i % size;
-
-    for (let dx = -1; dx <= 1; dx++) {
-      for (let dy = -1; dy <= 1; dy++) {
-        if (dx === 0 && dy === 0) continue;
-        const nx = x + dx, ny = y + dy;
-        if (nx >= 0 && ny >= 0 && nx < size && ny < size && board[nx*size + ny] === '💣') {
-          count++;
+        for (let x = 0; x < size; x++) {
+            board[y][x] = 0;
         }
-      }
     }
-    board[i] = count;
-  }
 
-  return board;
+    let placed = 0;
+
+    while (placed < mines) {
+        const x = Math.floor(Math.random() * size);
+        const y = Math.floor(Math.random() * size);
+
+        if (board[y][x] !== 'M') {
+            board[y][x] = 'M';
+            placed++;
+        }
+    }
+
+    return board;
 }
 
-// ================= FLOOD FILL =================
-function flood(game, idx) {
-  if (game.revealed[idx] || game.flags[idx]) return;
-  game.revealed[idx] = true;
+function createKeyboard(game) {
+    const keyboard = [];
 
-  if (game.board[idx] !== 0) return;
+    for (let y = 0; y < game.size; y++) {
+        const row = [];
 
-  const size = game.size;
-  const x = Math.floor(idx / size);
-  const y = idx % size;
+        for (let x = 0; x < game.size; x++) {
 
-  for (let dx = -1; dx <= 1; dx++) {
-    for (let dy = -1; dy <= 1; dy++) {
-      const nx = x + dx, ny = y + dy;
-      if (nx >= 0 && ny >= 0 && nx < size && ny < size) {
-        flood(game, nx * size + ny);
-      }
+            let text = '⬜';
+
+            if (game.revealed[y][x]) {
+
+                if (game.board[y][x] === 'M') {
+                    text = '💣';
+                } else {
+                    text = '🟩';
+                }
+            }
+
+            row.push({
+                text,
+                callback_data: `cell_${x}_${y}`
+            });
+        }
+
+        keyboard.push(row);
     }
-  }
+
+    return {
+        inline_keyboard: keyboard
+    };
 }
 
-// ================= RENDER =================
-function render(game) {
-  const rows = [];
-  const remainingMines = game.mines - game.flags.filter(Boolean).length;
+async function sendMessage(chatId, text, keyboard = null) {
 
-  for (let i = 0; i < game.size; i++) {
-    const row = [];
-    for (let j = 0; j < game.size; j++) {
-      const idx = i * game.size + j;
-      let text = '◻️';
+    await axios.post(`${API}/sendMessage`, {
+        chat_id: chatId,
+        text,
+        reply_markup: keyboard
+    });
+}
 
-      if (game.flags[idx]) text = '🚩';
-      else if (game.revealed[idx]) {
-        if (game.board[idx] === '💣') text = '💣';
-        else if (game.board[idx] === 0) text = '▫️';
-        else text = `${game.board[idx]}️⃣`;
-      }
+async function editMessage(chatId, messageId, text, keyboard = null) {
 
-      row.push({ text, callback_data: `c_${idx}` });
-    }
-    rows.push(row);
-  }
-
-  rows.push([
-    { text: `⛳ ${remainingMines}`, callback_data: 'noop' },
-    { text: '🏠 منو', callback_data: 'menu' },
-    { text: '🔄 دوباره', callback_data: 'new' }
-  ]);
-
-  return { inline_keyboard: rows };
+    await axios.post(`${API}/editMessageText`, {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        reply_markup: keyboard
+    });
 }
 
 // ================= WEBHOOK =================
-app.post('/webhook', async (req, res) => {
-  res.sendStatus(200);
-  const update = req.body;
 
-  try {
-    if (update.message?.text === '/start') {
-      const user = getUser(update.message.from.id);
-      await axios.post(`${API}/sendMessage`, {
-        chat_id: update.message.chat.id,
-        text: `🎮 **مین‌روب پرو**\n\n💰 ${user.coins} سکه\n🏆 ${user.wins} برد\n💀 ${user.losses} باخت`,
-        parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [[{ text: '🎮 بازی جدید', callback_data: 'select_level' }]]
+app.post('/', async (req, res) => {
+
+    res.sendStatus(200);
+
+    const update = req.body;
+
+    // ================= MESSAGE =================
+
+    if (update.message) {
+
+        const msg = update.message;
+        const chatId = msg.chat.id;
+        const userId = msg.from.id;
+        const text = msg.text;
+
+        const user = getUser(userId);
+
+        // ===== START =====
+
+        if (text === '/start') {
+
+            return sendMessage(
+                chatId,
+                `🎮 به ربات مین‌روب خوش اومدی\n\n💰 سکه: ${user.coins}\n\n/startgame برای شروع`
+            );
         }
-      });
-      return;
+
+        // ===== START GAME =====
+
+        if (text === '/startgame') {
+
+            if (user.coins < 10) {
+                return sendMessage(chatId, '❌ سکه کافی نداری');
+            }
+
+            updateCoins(userId, -10);
+
+            const game = {
+                size: 4,
+                mines: 3,
+                board: generateBoard(4, 3),
+                revealed: Array(4).fill().map(() => Array(4).fill(false)),
+                safeCells: 13,
+                opened: 0,
+                messageId: null
+            };
+
+            games.set(userId, game);
+
+            const sent = await axios.post(`${API}/sendMessage`, {
+                chat_id: chatId,
+                text: `💣 بازی شروع شد\n\n🎯 مین‌ها: 3\n💰 جایزه: 25 سکه`,
+                reply_markup: createKeyboard(game)
+            });
+
+            game.messageId = sent.data.result.message_id;
+
+            return;
+        }
     }
 
-    if (!update.callback_query) return;
+    // ================= CALLBACK =================
 
-    const cb = update.callback_query;
-    const data = cb.data;
-    const chatId = cb.message.chat.id;
-    const msgId = cb.message.message_id;
-    const userId = cb.from.id;
+    if (update.callback_query) {
 
-    // Anti-spam
-    if (games.has(userId) && games.get(userId).clickLock) return;
-    if (games.has(userId)) games.get(userId).clickLock = true;
+        const query = update.callback_query;
 
-    // انتخاب سطح
-    if (data === 'select_level') {
-      const buttons = Object.keys(LEVELS).map(lvl => [{
-        text: LEVELS[lvl].name,
-        callback_data: `level_${lvl}`
-      }]);
+        const data = query.data;
 
-      await axios.post(`${API}/editMessageText`, {
-        chat_id: chatId,
-        message_id: msgId,
-        text: ' difficulty سطح难度 رو انتخاب کن:',
-        reply_markup: { inline_keyboard: buttons }
-      });
-      return;
+        const userId = query.from.id;
+        const chatId = query.message.chat.id;
+        const messageId = query.message.message_id;
+
+        const game = games.get(userId);
+
+        if (!game) return;
+
+        const parts = data.split('_');
+
+        const x = Number(parts[1]);
+        const y = Number(parts[2]);
+
+        if (game.revealed[y][x]) return;
+
+        game.revealed[y][x] = true;
+
+        // ===== BOMB =====
+
+        if (game.board[y][x] === 'M') {
+
+            for (let yy = 0; yy < game.size; yy++) {
+                for (let xx = 0; xx < game.size; xx++) {
+
+                    if (game.board[yy][xx] === 'M') {
+                        game.revealed[yy][xx] = true;
+                    }
+                }
+            }
+
+            games.delete(userId);
+
+            return editMessage(
+                chatId,
+                messageId,
+                '💥 باختی!\n\n❌ مین منفجر شد',
+                createKeyboard(game)
+            );
+        }
+
+        game.opened++;
+
+        // ===== WIN =====
+
+        if (game.opened >= game.safeCells) {
+
+            updateCoins(userId, 25);
+
+            games.delete(userId);
+
+            return editMessage(
+                chatId,
+                messageId,
+                '🏆 بردی!\n\n💰 25 سکه گرفتی',
+                createKeyboard(game)
+            );
+        }
+
+        return editMessage(
+            chatId,
+            messageId,
+            `🎮 بازی ادامه دارد\n\n✅ خانه‌های باز شده: ${game.opened}`,
+            createKeyboard(game)
+        );
     }
-
-    // شروع بازی با سطح انتخابی
-    if (data.startsWith('level_')) {
-      const levelKey = data.split('_')[1];
-      const level = LEVELS[levelKey];
-
-      games.set(userId, {
-        ...level,
-        board: null,
-        revealed: Array(level.size * level.size).fill(false),
-        flags: Array(level.size * level.size).fill(false),
-        first: true,
-        clickLock: false
-      });
-
-      await axios.post(`${API}/editMessageText`, {
-        chat_id: chatId,
-        message_id: msgId,
-        text: `🎮 ${level.name} — شروع شد!\n⛳ مین: ${level.mines}`,
-        reply_markup: render(games.get(userId))
-      });
-      return;
-    }
-
-    const game = games.get(userId);
-    if (!game) return;
-
-    // کلیک روی خانه
-    if (data.startsWith('c_')) {
-      const idx = +data.split('_')[1];
-
-      if (game.first) {
-        game.board = createBoard(game.size, game.mines, idx);
-        game.first = false;
-      }
-
-      // باخت
-      if (game.board[idx] === '💣') {
-        game.revealed.fill(true);
-        // loss logic
-        db.prepare(`UPDATE users SET losses = losses + 1 WHERE id = ?`).run(userId);
-
-        await axios.post(`${API}/editMessageText`, {
-          chat_id: chatId,
-          message_id: msgId,
-          text: '💥 باختی! دوباره سعی کن.',
-          reply_markup: render(game)
-        });
-        games.delete(userId);
-        return;
-      }
-
-      flood(game, idx);
-
-      // چک برد
-      const revealedCount = game.revealed.filter(Boolean).length;
-      if (revealedCount === game.size * game.size - game.mines) {
-        db.prepare(`UPDATE users SET wins = wins + 1, coins = coins + ? WHERE id = ?`)
-          .run(game.reward, userId);
-
-        await axios.post(`${API}/editMessageText`, {
-          chat_id: chatId,
-          message_id: msgId,
-          text: `🎉 تبریک! بردی +${game.reward} سکه`,
-          reply_markup: render(game)
-        });
-        games.delete(userId);
-        return;
-      }
-
-      // ادامه بازی
-      await axios.post(`${API}/editMessageText`, {
-        chat_id: chatId,
-        message_id: msgId,
-        text: `🎮 در حال بازی...`,
-        reply_markup: render(game)
-      });
-    }
-
-    // دکمه‌های دیگر
-    if (data === 'menu' || data === 'new') {
-      games.delete(userId);
-      // برگشت به منو
-    }
-
-  } catch (err) {
-    console.error(err);
-  }
 });
 
-app.get('/', (req, res) => res.send('Minesweeper Bot Running 🚀'));
-app.listen(PORT, () => console.log(`🚀 Bot running on port ${PORT}`));
+// ================= START SERVER =================
+
+app.listen(PORT, () => {
+    console.log(`Server running on ${PORT}`);
+});
