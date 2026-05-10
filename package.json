@@ -1,13 +1,23 @@
 {
-  "name": "minesweeper-simple",
+  "name": "bale-minesweeper-bot",
   "version": "1.0.0",
-  "description": "Simple Minesweeper game bot for Telegram",
+  "description": "Minesweeper Game Bot For Bale",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "keywords": [
+    "bale",
+    "bot",
+    "minesweeper",
+    "game"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
-    "telegraf": "4.15.3",
-    "dotenv": "^16.0.3"
+    "axios": "^1.8.1",
+    "better-sqlite3": "^11.7.0",
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2"
   }
 }
