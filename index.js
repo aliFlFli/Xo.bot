@@ -7,6 +7,7 @@ const MINES = 5;
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const games = new Map();
+let flagMode = new Map();
 
 // ================== GAME CLASS ==================
 class MinesweeperGame {
@@ -133,9 +134,7 @@ function renderGame(game, gameOver = false) {
   return Markup.inlineKeyboard(rows);
 }
 
-// ================== HANDLERS ==================
-let flagMode = new Map();
-
+// ================== BOT COMMANDS ==================
 bot.start((ctx) => {
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('🎮 شروع بازی', 'start_game')]
@@ -152,6 +151,7 @@ bot.start((ctx) => {
   );
 });
 
+// ================== ACTIONS ==================
 bot.action('start_game', (ctx) => {
   const game = new MinesweeperGame();
   games.set(ctx.chat.id, game);
@@ -277,7 +277,7 @@ bot.action(/cell_(\d+)/, async (ctx) => {
 
 // ================== LAUNCH ==================
 bot.launch()
-  .then(() => console.log('🚀 Minesweeper Running!'))
+  .then(() => console.log('🚀 Minesweeper Bot Running!'))
   .catch(console.error);
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
