@@ -4,102 +4,117 @@ const express = require('express');
 const axios = require('axios');
 
 const app = express();
+
 app.use(express.json());
 
-// ======================
-// CONFIG
-// ======================
+// ================= CONFIG =================
 
 const TOKEN = process.env.BOT_TOKEN;
 const API = `https://tapi.bale.ai/bot${TOKEN}`;
 const PORT = process.env.PORT || 3000;
 
-// ======================
-// GAME DATA
-// ======================
+// ================= GAME DATA =================
 
 const games = {};
 
-// ======================
-// SEND MESSAGE
-// ======================
+// ================= HOME =================
+
+app.get('/', (req, res) => {
+  res.send('Bot is running ✅');
+});
+
+// ================= SEND MESSAGE =================
 
 async function sendMessage(chatId, text, keyboard = null) {
   try {
-    await axios.post(`${API}/sendMessage`, {
+
+    const data = {
       chat_id: chatId,
-      text,
-      reply_markup: keyboard
-    });
+      text: text
+    };
+
+    if (keyboard) {
+      data.reply_markup = keyboard;
+    }
+
+    const res = await axios.post(`${API}/sendMessage`, data);
+
+    console.log('MESSAGE SENT:', res.data);
+
   } catch (err) {
-    console.log(err.response?.data || err.message);
+
+    console.log('SEND ERROR');
+
+    if (err.response) {
+      console.log(err.response.data);
+    } else {
+      console.log(err.message);
+    }
   }
 }
 
-// ======================
-// CREATE GAME
-// ======================
+// ================= CREATE BOARD =================
 
 function createBoard() {
-  let cells = [];
 
-  // 9 خونه
+  let board = [];
+
   for (let i = 0; i < 9; i++) {
-    cells.push("safe");
+    board.push('safe');
   }
 
-  // یک بمب
-  const bombIndex = Math.floor(Math.random() * 9);
-  cells[bombIndex] = "bomb";
+  const bomb = Math.floor(Math.random() * 9);
 
-  return cells;
+  board[bomb] = 'bomb';
+
+  return board;
 }
 
-// ======================
-// KEYBOARD
-// ======================
+// ================= KEYBOARD =================
 
-function gameKeyboard(userId) {
-  const board = games[userId].board;
-  const opened = games[userId].opened;
+function createKeyboard(userId) {
+
+  const game = games[userId];
 
   let keyboard = {
     inline_keyboard: []
   };
 
   for (let row = 0; row < 3; row++) {
-    let line = [];
+
+    let rowButtons = [];
 
     for (let col = 0; col < 3; col++) {
-      let index = row * 3 + col;
 
-      let text = "⬜";
+      const index = row * 3 + col;
 
-      if (opened.includes(index)) {
-        if (board[index] === "bomb") {
-          text = "💣";
+      let text = '⬜';
+
+      if (game.opened.includes(index)) {
+
+        if (game.board[index] === 'bomb') {
+          text = '💣';
         } else {
-          text = "✅";
+          text = '✅';
         }
       }
 
-      line.push({
+      rowButtons.push({
         text,
         callback_data: `cell_${index}`
       });
     }
 
-    keyboard.inline_keyboard.push(line);
+    keyboard.inline_keyboard.push(rowButtons);
   }
 
   return keyboard;
 }
 
-// ======================
-// START GAME
-// ======================
+// ================= START GAME =================
 
 async function startGame(chatId, userId) {
+
   games[userId] = {
     board: createBoard(),
     opened: []
@@ -107,44 +122,53 @@ async function startGame(chatId, userId) {
 
   await sendMessage(
     chatId,
-    "🎮 بازی مین‌روب شروع شد!\n\nیکی از خونه‌ها بمبه 💣",
-    gameKeyboard(userId)
+    '🎮 بازی شروع شد!\nیکی از خونه‌ها بمبه 💣',
+    createKeyboard(userId)
   );
 }
 
-// ======================
-// WEBHOOK
-// ======================
+// ================= WEBHOOK =================
 
 app.post('/', async (req, res) => {
-  const update = req.body;
+
+  console.log('UPDATE:');
+  console.log(JSON.stringify(req.body, null, 2));
 
   try {
 
-    // ======================
-    // MESSAGE
-    // ======================
+    const update = req.body;
+
+    // ================= MESSAGE =================
 
     if (update.message) {
-      const chatId = update.message.chat.id;
-      const userId = update.message.from.id;
-      const text = update.message.text;
+
+      const message = update.message;
+
+      const chatId = message.chat.id;
+      const userId = message.from.id;
+      const text = message.text;
+
+      console.log('MESSAGE:', text);
+
+      // START
 
       if (text === '/start') {
+
         await sendMessage(
           chatId,
           'سلام 👋\nبرای شروع بازی دستور /game را بزن'
         );
       }
 
+      // GAME
+
       if (text === '/game') {
+
         await startGame(chatId, userId);
       }
     }
 
-    // ======================
-    // CALLBACK
-    // ======================
+    // ================= CALLBACK =================
 
     if (update.callback_query) {
 
@@ -152,7 +176,10 @@ app.post('/', async (req, res) => {
 
       const userId = query.from.id;
       const chatId = query.message.chat.id;
+
       const data = query.data;
+
+      console.log('CALLBACK:', data);
 
       if (!games[userId]) {
         return res.sendStatus(200);
@@ -168,26 +195,28 @@ app.post('/', async (req, res) => {
 
       const board = games[userId].board;
 
-      // باخت
-      if (board[index] === "bomb") {
+      // ================= LOSE =================
+
+      if (board[index] === 'bomb') {
 
         await sendMessage(
           chatId,
-          '💥 باختی!\nبمب رو پیدا کردی.',
-          gameKeyboard(userId)
+          '💥 باختی!',
+          createKeyboard(userId)
         );
 
         delete games[userId];
 
       } else {
 
-        // برد
-        if (games[userId].opened.length === 8) {
+        // ================= WIN =================
+
+        if (games[userId].opened.length >= 8) {
 
           await sendMessage(
             chatId,
-            '🏆 بردی!\nهمه خونه‌ها سالم بودن.',
-            gameKeyboard(userId)
+            '🏆 بردی!',
+            createKeyboard(userId)
           );
 
           delete games[userId];
@@ -197,7 +226,7 @@ app.post('/', async (req, res) => {
           await sendMessage(
             chatId,
             'ادامه بده 👀',
-            gameKeyboard(userId)
+            createKeyboard(userId)
           );
         }
       }
@@ -206,14 +235,20 @@ app.post('/', async (req, res) => {
     res.sendStatus(200);
 
   } catch (err) {
-    console.log(err);
+
+    console.log('MAIN ERROR');
+
+    if (err.response) {
+      console.log(err.response.data);
+    } else {
+      console.log(err.message);
+    }
+
     res.sendStatus(500);
   }
 });
 
-// ======================
-// RUN SERVER
-// ======================
+// ================= RUN =================
 
 app.listen(PORT, () => {
   console.log(`BOT RUNNING ON ${PORT}`);
