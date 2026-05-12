@@ -293,7 +293,7 @@ function gameKeyboard(
 
             const idx = i * size + j;
 
-            let emoji = '⬜';
+            let emoji = '🪙';
 
             if (revealed[idx]) {
 
@@ -303,7 +303,7 @@ function gameKeyboard(
 
                 } else if (board[idx] === 0) {
 
-                    emoji = '▪️';
+                    emoji = '🔓';
 
                 } else {
 
